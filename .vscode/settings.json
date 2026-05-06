@@ -1,0 +1,62 @@
+{
+  "C_Cpp.intelliSenseEngine": "default",
+  "idf.espIdfPathWin": "E:/Espressif/frameworks/esp-idf-v5.3.1/",
+  "idf.pythonInstallPath": "E:\\Espressif\\tools\\idf-python\\3.11.2\\python.exe",
+  "idf.openOcdConfigs": [
+    "board/esp32s3-builtin.cfg"
+  ],
+  "idf.portWin": "COM15",
+  "idf.toolsPathWin": "E:\\Espressif",
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32s3",
+    "IDF_PYTHON_ENV_PATH": "E:\\Espressif\\python_env\\idf5.3_py3.11_env"
+  },
+  "terminal.integrated.env.windows": {
+    "IDF_TOOLS_PATH": "E:\\Espressif",
+    "IDF_PATH": "E:\\Espressif\\frameworks\\esp-idf-v5.3.1",
+    "IDF_TARGET": "esp32s3",
+    "IDF_PYTHON_ENV_PATH": "E:\\Espressif\\python_env\\idf5.3_py3.11_env",
+    "Path": "E:\\Espressif\\tools\\ccache\\4.8\\ccache-4.8-windows-x86_64;E:\\Espressif\\tools\\xtensa-esp-elf\\esp-13.2.0_20240530\\xtensa-esp-elf\\bin;${env:Path}"
+  },
+  "cmake.generator": "Ninja",
+  "cmake.configureArgs": [
+    "-DPYTHON=E:/Espressif/python_env/idf5.3_py3.11_env/Scripts/python.exe",
+    "-DPYTHON_DEPS_CHECKED=1",
+    "-DESP_PLATFORM=1",
+    "-DCCACHE_ENABLE=0"
+  ],
+  "cmake.environment": {
+    "IDF_TOOLS_PATH": "E:\\Espressif",
+    "IDF_PATH": "E:\\Espressif\\frameworks\\esp-idf-v5.3.1",
+    "IDF_TARGET": "esp32s3",
+    "IDF_CCACHE_ENABLE": "0",
+    "IDF_PYTHON_ENV_PATH": "E:\\Espressif\\python_env\\idf5.3_py3.11_env",
+    "Path": "E:\\Espressif\\tools\\ccache\\4.8\\ccache-4.8-windows-x86_64;E:\\Espressif\\tools\\xtensa-esp-elf\\esp-13.2.0_20240530\\xtensa-esp-elf\\bin;E:\\Espressif\\tools\\cmake\\3.24.0\\bin;E:\\Espressif\\tools\\ninja\\1.11.1;E:\\Espressif\\tools\\idf-exe\\1.0.3;${env:Path}",
+    "PATH": "E:\\Espressif\\tools\\ccache\\4.8\\ccache-4.8-windows-x86_64;E:\\Espressif\\tools\\xtensa-esp-elf\\esp-13.2.0_20240530\\xtensa-esp-elf\\bin;E:\\Espressif\\tools\\cmake\\3.24.0\\bin;E:\\Espressif\\tools\\ninja\\1.11.1;E:\\Espressif\\tools\\idf-exe\\1.0.3;${env:PATH}"
+  },
+  "cmake.configureEnvironment": {
+    "IDF_TOOLS_PATH": "E:\\Espressif",
+    "IDF_PATH": "E:\\Espressif\\frameworks\\esp-idf-v5.3.1",
+    "IDF_TARGET": "esp32s3",
+    "IDF_CCACHE_ENABLE": "0",
+    "IDF_PYTHON_ENV_PATH": "E:\\Espressif\\python_env\\idf5.3_py3.11_env",
+    "Path": "E:\\Espressif\\tools\\ccache\\4.8\\ccache-4.8-windows-x86_64;E:\\Espressif\\tools\\xtensa-esp-elf\\esp-13.2.0_20240530\\xtensa-esp-elf\\bin;E:\\Espressif\\tools\\cmake\\3.24.0\\bin;E:\\Espressif\\tools\\ninja\\1.11.1;E:\\Espressif\\tools\\idf-exe\\1.0.3;${env:Path}",
+    "PATH": "E:\\Espressif\\tools\\ccache\\4.8\\ccache-4.8-windows-x86_64;E:\\Espressif\\tools\\xtensa-esp-elf\\esp-13.2.0_20240530\\xtensa-esp-elf\\bin;E:\\Espressif\\tools\\cmake\\3.24.0\\bin;E:\\Espressif\\tools\\ninja\\1.11.1;E:\\Espressif\\tools\\idf-exe\\1.0.3;${env:PATH}"
+  },
+  "cmake.buildEnvironment": {
+    "IDF_TOOLS_PATH": "E:\\Espressif",
+    "IDF_PATH": "E:\\Espressif\\frameworks\\esp-idf-v5.3.1",
+    "IDF_TARGET": "esp32s3",
+    "IDF_CCACHE_ENABLE": "0",
+    "IDF_PYTHON_ENV_PATH": "E:\\Espressif\\python_env\\idf5.3_py3.11_env",
+    "Path": "E:\\Espressif\\tools\\ccache\\4.8\\ccache-4.8-windows-x86_64;E:\\Espressif\\tools\\xtensa-esp-elf\\esp-13.2.0_20240530\\xtensa-esp-elf\\bin;E:\\Espressif\\tools\\cmake\\3.24.0\\bin;E:\\Espressif\\tools\\ninja\\1.11.1;E:\\Espressif\\tools\\idf-exe\\1.0.3;${env:Path}",
+    "PATH": "E:\\Espressif\\tools\\ccache\\4.8\\ccache-4.8-windows-x86_64;E:\\Espressif\\tools\\xtensa-esp-elf\\esp-13.2.0_20240530\\xtensa-esp-elf\\bin;E:\\Espressif\\tools\\cmake\\3.24.0\\bin;E:\\Espressif\\tools\\ninja\\1.11.1;E:\\Espressif\\tools\\idf-exe\\1.0.3;${env:PATH}"
+  },
+  "clangd.path": "E:\\Espressif\\tools\\esp-clang\\16.0.1-fe4f10a809\\esp-clang\\bin\\clangd.exe",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=E:\\Espressif\\tools\\xtensa-esp-elf\\esp-13.2.0_20240530\\xtensa-esp-elf\\bin\\xtensa-esp32s3-elf-gcc.exe",
+    "--compile-commands-dir=d:\\file_store\\embedderShit\\04_xiaozhi\\pro\\xiaozhi_sample\\ai-xiaozhi-sample\\build"
+  ],
+  "idf.flashType": "UART"
+}
