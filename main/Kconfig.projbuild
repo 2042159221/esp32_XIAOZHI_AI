@@ -1,0 +1,90 @@
+menu "Xiaozhi WiFi STA Configuration"
+
+    config ESP_WIFI_SSID
+        string "WiFi STA SSID"
+        default ""
+        help
+            SSID for the device to connect to in WiFi station mode.
+
+    config ESP_WIFI_PASSWORD
+        string "WiFi STA Password"
+        default ""
+        help
+            WiFi password for station mode. Leave empty when connecting to an open AP.
+
+    choice ESP_WIFI_SAE_MODE
+        prompt "WPA3 SAE mode selection"
+        default ESP_WPA3_SAE_PWE_BOTH
+        help
+            Select mode for SAE as Hunt and Peck, H2E or both.
+        config ESP_WPA3_SAE_PWE_HUNT_AND_PECK
+            bool "HUNT AND PECK"
+        config ESP_WPA3_SAE_PWE_HASH_TO_ELEMENT
+            bool "H2E"
+        config ESP_WPA3_SAE_PWE_BOTH
+            bool "BOTH"
+    endchoice
+
+    config ESP_WIFI_PW_ID
+        string "PASSWORD IDENTIFIER"
+        depends on  ESP_WPA3_SAE_PWE_HASH_TO_ELEMENT|| ESP_WPA3_SAE_PWE_BOTH
+        default ""
+        help
+            password identifier for SAE H2E
+
+    config ESP_MAXIMUM_RETRY
+        int "Maximum retry"
+        default 5
+        range 1 20
+        help
+            Maximum station reconnect attempts before reporting connection failure.
+
+    choice ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD
+        prompt "WiFi Scan auth mode threshold"
+        default ESP_WIFI_AUTH_WPA2_PSK
+        help
+            The weakest authmode to accept in the scan mode.
+            This value defaults to ESP_WIFI_AUTH_WPA2_PSK incase password is present and ESP_WIFI_AUTH_OPEN is used.
+            Please select ESP_WIFI_AUTH_WEP/ESP_WIFI_AUTH_WPA_PSK incase AP is operating in WEP/WPA mode.
+
+        config ESP_WIFI_AUTH_OPEN
+            bool "OPEN"
+        config ESP_WIFI_AUTH_WEP
+            bool "WEP"
+        config ESP_WIFI_AUTH_WPA_PSK
+            bool "WPA PSK"
+        config ESP_WIFI_AUTH_WPA2_PSK
+            bool "WPA2 PSK"
+        config ESP_WIFI_AUTH_WPA_WPA2_PSK
+            bool "WPA/WPA2 PSK"
+        config ESP_WIFI_AUTH_WPA3_PSK
+            bool "WPA3 PSK"
+        config ESP_WIFI_AUTH_WPA2_WPA3_PSK
+            bool "WPA2/WPA3 PSK"
+        config ESP_WIFI_AUTH_WAPI_PSK
+            bool "WAPI PSK"
+    endchoice
+
+endmenu
+
+menu "Xiaozhi Provisioning Configuration"
+
+    config APP_PROV_SERVICE_NAME
+        string "Provisioning service name"
+        default "XIAOZHI_PROV"
+        help
+            BLE device name or SoftAP SSID advertised during provisioning.
+
+    config APP_PROV_SERVICE_KEY
+        string "SoftAP service key"
+        default "xiaozhi123"
+        help
+            SoftAP password. Ignored by BLE provisioning.
+
+    config APP_PROV_POP
+        string "Proof of possession"
+        default "abcd1234"
+        help
+            Proof of possession used by secure provisioning.
+
+endmenu
