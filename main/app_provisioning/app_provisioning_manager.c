@@ -7,6 +7,7 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "qrcode.h"
 #include "sdkconfig.h"
 #include "wifi_provisioning/manager.h"
@@ -26,15 +27,25 @@ static const char *TAG = "prov_manager";
 #define CONFIG_APP_PROV_POP "abcd1234"
 #endif
 
+#ifndef CONFIG_APP_PROV_STOP_DELAY_MS
+#define CONFIG_APP_PROV_STOP_DELAY_MS 10000
+#endif
+
 static app_provisioning_state_t current_state = APP_PROVISIONING_STATE_UNPROVISIONED;
 static app_provisioning_manager_config_t manager_config;
 static const app_provisioning_strategy_t *active_strategy;
+static bool restart_provisioning_after_stop;
+static bool stop_requested_by_app;
+static esp_timer_handle_t provisioning_stop_timer;
 
 static void provisioning_event_cb(void *user_data, wifi_prov_cb_event_t event, void *event_data);
 static void log_provisioning_info(const app_provisioning_strategy_t *strategy, const char *service_name, const char *service_key);
 static void print_provisioning_qrcode(const app_provisioning_strategy_t *strategy, const char *service_name);
 static esp_err_t start_provisioning_service(void);
 static esp_err_t switch_to_fallback_strategy(const char *reason);
+static esp_err_t restart_active_provisioning_service(const char *reason);
+static esp_err_t schedule_provisioning_stop(void);
+static void stop_provisioning_timer_cb(void *arg);
 static void set_state(app_provisioning_state_t state);
 static void start_business(void);
 
@@ -42,6 +53,20 @@ esp_err_t app_provisioning_manager_start(const app_provisioning_manager_config_t
 {
     if (config != NULL) {
         manager_config = *config;
+    }
+
+    restart_provisioning_after_stop = false;
+    stop_requested_by_app = false;
+
+    if (provisioning_stop_timer == NULL) {
+        const esp_timer_create_args_t timer_args = {
+            .callback = stop_provisioning_timer_cb,
+            .arg = NULL,
+            .dispatch_method = ESP_TIMER_TASK,
+            .name = "prov_stop_tm",
+            .skip_unhandled_events = true,
+        };
+        ESP_RETURN_ON_ERROR(esp_timer_create(&timer_args, &provisioning_stop_timer), TAG, "create provisioning stop timer failed");
     }
 
     ESP_RETURN_ON_ERROR(xiaozhi_wifi_sta_init(), TAG, "wifi sta init failed");
@@ -85,6 +110,7 @@ static esp_err_t start_provisioning_service(void)
 {
     set_state(APP_PROVISIONING_STATE_UNPROVISIONED);
     set_state(APP_PROVISIONING_STATE_PROVISIONING);
+    ESP_RETURN_ON_ERROR(wifi_prov_mgr_disable_auto_stop(CONFIG_APP_PROV_STOP_DELAY_MS), TAG, "disable provisioning auto stop failed");
     esp_err_t err = app_provisioning_adapter_start(active_strategy, CONFIG_APP_PROV_SERVICE_NAME, CONFIG_APP_PROV_SERVICE_KEY);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "start %s provisioning failed: %s", active_strategy->name, esp_err_to_name(err));
@@ -107,8 +133,10 @@ static esp_err_t switch_to_fallback_strategy(const char *reason)
 
     app_provisioning_adapter_deinit();
     active_strategy = fallback_strategy;
+    stop_requested_by_app = false;
 
     ESP_RETURN_ON_ERROR(app_provisioning_adapter_init(active_strategy, provisioning_event_cb, NULL), TAG, "fallback provisioning adapter init failed");
+    ESP_RETURN_ON_ERROR(wifi_prov_mgr_disable_auto_stop(CONFIG_APP_PROV_STOP_DELAY_MS), TAG, "disable fallback provisioning auto stop failed");
 
     esp_err_t err = active_strategy->start(active_strategy, CONFIG_APP_PROV_SERVICE_NAME, CONFIG_APP_PROV_SERVICE_KEY);
     ESP_RETURN_ON_ERROR(err, TAG, "fallback provisioning start failed");
@@ -116,6 +144,49 @@ static esp_err_t switch_to_fallback_strategy(const char *reason)
     ESP_LOGI(TAG, "provisioning started, service_name=%s", CONFIG_APP_PROV_SERVICE_NAME);
     log_provisioning_info(active_strategy, CONFIG_APP_PROV_SERVICE_NAME, CONFIG_APP_PROV_SERVICE_KEY);
     return ESP_OK;
+}
+
+static esp_err_t restart_active_provisioning_service(const char *reason)
+{
+    ESP_LOGW(TAG, "restart %s provisioning service: %s", active_strategy->name, reason);
+
+    stop_requested_by_app = false;
+    ESP_RETURN_ON_ERROR(app_provisioning_adapter_init(active_strategy, provisioning_event_cb, NULL), TAG, "re-init provisioning adapter failed");
+    ESP_RETURN_ON_ERROR(wifi_prov_mgr_disable_auto_stop(CONFIG_APP_PROV_STOP_DELAY_MS), TAG, "disable provisioning auto stop before restart failed");
+
+    esp_err_t err = active_strategy->start(active_strategy, CONFIG_APP_PROV_SERVICE_NAME, CONFIG_APP_PROV_SERVICE_KEY);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "restart %s provisioning failed: %s", active_strategy->name, esp_err_to_name(err));
+        return switch_to_fallback_strategy("restart preferred provisioning failed");
+    }
+
+    set_state(APP_PROVISIONING_STATE_PROVISIONING);
+    ESP_LOGI(TAG, "provisioning restarted, service_name=%s", CONFIG_APP_PROV_SERVICE_NAME);
+    log_provisioning_info(active_strategy, CONFIG_APP_PROV_SERVICE_NAME, CONFIG_APP_PROV_SERVICE_KEY);
+    return ESP_OK;
+}
+
+static esp_err_t schedule_provisioning_stop(void)
+{
+    if (provisioning_stop_timer == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    stop_requested_by_app = true;
+    esp_err_t err = esp_timer_stop(provisioning_stop_timer);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        return err;
+    }
+
+    ESP_LOGI(TAG, "schedule provisioning stop in %d ms", CONFIG_APP_PROV_STOP_DELAY_MS);
+    return esp_timer_start_once(provisioning_stop_timer, CONFIG_APP_PROV_STOP_DELAY_MS * 1000ULL);
+}
+
+static void stop_provisioning_timer_cb(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "app requested provisioning stop after delay");
+    wifi_prov_mgr_stop_provisioning();
 }
 
 esp_err_t app_provisioning_manager_reset_and_restart(void)
@@ -153,19 +224,33 @@ static void provisioning_event_cb(void *user_data, wifi_prov_cb_event_t event, v
     case WIFI_PROV_CRED_FAIL: {
         set_state(APP_PROVISIONING_STATE_FAILED);
         ESP_LOGW(TAG, "wifi provisioning credential failed");
-        esp_err_t err = wifi_prov_mgr_reset_sm_state_on_failure();
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "reset provisioning state machine failed: %s", esp_err_to_name(err));
-        }
-        set_state(APP_PROVISIONING_STATE_PROVISIONING);
+        restart_provisioning_after_stop = true;
+        wifi_prov_mgr_stop_provisioning();
         break;
     }
     case WIFI_PROV_CRED_SUCCESS:
         set_state(APP_PROVISIONING_STATE_CONNECTED);
         start_business();
+        {
+            esp_err_t err = schedule_provisioning_stop();
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "schedule provisioning stop failed: %s", esp_err_to_name(err));
+            }
+        }
         break;
     case WIFI_PROV_END:
         app_provisioning_adapter_deinit();
+        if (stop_requested_by_app) {
+            stop_requested_by_app = false;
+            ESP_LOGI(TAG, "provisioning stopped after app-managed delay");
+        }
+        if (restart_provisioning_after_stop) {
+            restart_provisioning_after_stop = false;
+            esp_err_t err = restart_active_provisioning_service("credential failure requested a clean restart");
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "restart provisioning service failed: %s", esp_err_to_name(err));
+            }
+        }
         break;
     default:
         break;

@@ -100,4 +100,13 @@ menu "Xiaozhi Provisioning Configuration"
         help
             Proof of possession used by secure provisioning.
 
+    config APP_PROV_STOP_DELAY_MS
+        int "Provisioning stop delay (ms)"
+        default 10000
+        range 1000 60000
+        help
+            Delay before the application actively stops the provisioning service
+            after successful WiFi provisioning. Increase this if the phone app
+            still reports an error after the device has already connected.
+
 endmenu
