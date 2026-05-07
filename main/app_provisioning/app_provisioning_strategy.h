@@ -18,7 +18,8 @@ struct app_provisioning_strategy {
     esp_err_t (*start)(const app_provisioning_strategy_t *strategy, const char *service_name, const char *service_key);
 };
 
-const app_provisioning_strategy_t *app_provisioning_strategy_factory_create(void);
+const app_provisioning_strategy_t *app_provisioning_strategy_factory_create_primary(void);
+const app_provisioning_strategy_t *app_provisioning_strategy_factory_create_fallback(const app_provisioning_strategy_t *current);
 
 #ifdef __cplusplus
 }

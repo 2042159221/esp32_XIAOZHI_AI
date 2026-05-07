@@ -8,6 +8,10 @@
 #define CONFIG_APP_PROV_TRANSPORT_BLE 1
 #endif
 
+#ifndef CONFIG_APP_PROV_TRANSPORT_SOFTAP
+#define CONFIG_APP_PROV_TRANSPORT_SOFTAP 0
+#endif
+
 #ifndef CONFIG_APP_PROV_POP
 #define CONFIG_APP_PROV_POP "abcd1234"
 #endif
@@ -35,9 +39,16 @@ static wifi_prov_mgr_config_t create_ble_manager_config(wifi_prov_cb_func_t even
 
 static wifi_prov_mgr_config_t create_softap_manager_config(wifi_prov_cb_func_t event_cb, void *user_data)
 {
-    (void)event_cb;
-    (void)user_data;
-    return (wifi_prov_mgr_config_t) {0};
+    wifi_prov_mgr_config_t config = {
+        .scheme = wifi_prov_scheme_softap,
+        .scheme_event_handler = WIFI_PROV_EVENT_HANDLER_NONE,
+        .app_event_handler = {
+            .event_cb = event_cb,
+            .user_data = user_data,
+        },
+    };
+
+    return config;
 }
 
 static const app_provisioning_strategy_t ble_strategy = {
@@ -48,8 +59,25 @@ static const app_provisioning_strategy_t ble_strategy = {
     .create_manager_config = create_ble_manager_config,
     .start = strategy_start,
 };
+static const app_provisioning_strategy_t softap_strategy = {
+    .name = "SoftAP",
+    .transport = "softap",
+    .qr_version = "v1",
+    .capabilities = "wifi_scan",
+    .create_manager_config = create_softap_manager_config,
+    .start = strategy_start,
+};
 
-const app_provisioning_strategy_t *app_provisioning_strategy_factory_create(void)
+const app_provisioning_strategy_t *app_provisioning_strategy_factory_create_primary(void)
 {
     return &ble_strategy;
+}
+
+const app_provisioning_strategy_t *app_provisioning_strategy_factory_create_fallback(const app_provisioning_strategy_t *current)
+{
+    if (current == &ble_strategy) {
+        return &softap_strategy;
+    }
+
+    return NULL;
 }

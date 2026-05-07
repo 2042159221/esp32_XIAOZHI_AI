@@ -69,6 +69,19 @@ endmenu
 
 menu "Xiaozhi Provisioning Configuration"
 
+    choice APP_PROV_TRANSPORT
+        prompt "Provisioning transport"
+        default APP_PROV_TRANSPORT_BLE
+        help
+            Select which provisioning strategy the factory creates at runtime.
+
+        config APP_PROV_TRANSPORT_BLE
+            bool "BLE provisioning"
+
+        config APP_PROV_TRANSPORT_SOFTAP
+            bool "SoftAP provisioning"
+    endchoice
+
     config APP_PROV_SERVICE_NAME
         string "Provisioning service name"
         default "XIAOZHI_PROV"

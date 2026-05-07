@@ -34,6 +34,7 @@ static void provisioning_event_cb(void *user_data, wifi_prov_cb_event_t event, v
 static void log_provisioning_info(const app_provisioning_strategy_t *strategy, const char *service_name, const char *service_key);
 static void print_provisioning_qrcode(const app_provisioning_strategy_t *strategy, const char *service_name);
 static esp_err_t start_provisioning_service(void);
+static esp_err_t switch_to_fallback_strategy(const char *reason);
 static void set_state(app_provisioning_state_t state);
 static void start_business(void);
 
@@ -45,7 +46,7 @@ esp_err_t app_provisioning_manager_start(const app_provisioning_manager_config_t
 
     ESP_RETURN_ON_ERROR(xiaozhi_wifi_sta_init(), TAG, "wifi sta init failed");
 
-    active_strategy = app_provisioning_strategy_factory_create();
+    active_strategy = app_provisioning_strategy_factory_create_primary();
     ESP_RETURN_ON_FALSE(active_strategy != NULL, ESP_FAIL, TAG, "create provisioning strategy failed");
     ESP_LOGI(TAG, "selected provisioning strategy: %s", active_strategy->name);
 
@@ -84,10 +85,33 @@ static esp_err_t start_provisioning_service(void)
 {
     set_state(APP_PROVISIONING_STATE_UNPROVISIONED);
     set_state(APP_PROVISIONING_STATE_PROVISIONING);
-    ESP_RETURN_ON_ERROR(
-        app_provisioning_adapter_start(active_strategy, CONFIG_APP_PROV_SERVICE_NAME, CONFIG_APP_PROV_SERVICE_KEY),
-        TAG,
-        "start provisioning failed");
+    esp_err_t err = app_provisioning_adapter_start(active_strategy, CONFIG_APP_PROV_SERVICE_NAME, CONFIG_APP_PROV_SERVICE_KEY);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "start %s provisioning failed: %s", active_strategy->name, esp_err_to_name(err));
+        return switch_to_fallback_strategy("preferred provisioning start failed");
+    }
+
+    ESP_LOGI(TAG, "provisioning started, service_name=%s", CONFIG_APP_PROV_SERVICE_NAME);
+    log_provisioning_info(active_strategy, CONFIG_APP_PROV_SERVICE_NAME, CONFIG_APP_PROV_SERVICE_KEY);
+    return ESP_OK;
+}
+
+static esp_err_t switch_to_fallback_strategy(const char *reason)
+{
+    const app_provisioning_strategy_t *fallback_strategy = app_provisioning_strategy_factory_create_fallback(active_strategy);
+    if (fallback_strategy == NULL) {
+        return ESP_FAIL;
+    }
+
+    ESP_LOGW(TAG, "fallback to %s provisioning: %s", fallback_strategy->name, reason);
+
+    app_provisioning_adapter_deinit();
+    active_strategy = fallback_strategy;
+
+    ESP_RETURN_ON_ERROR(app_provisioning_adapter_init(active_strategy, provisioning_event_cb, NULL), TAG, "fallback provisioning adapter init failed");
+
+    esp_err_t err = active_strategy->start(active_strategy, CONFIG_APP_PROV_SERVICE_NAME, CONFIG_APP_PROV_SERVICE_KEY);
+    ESP_RETURN_ON_ERROR(err, TAG, "fallback provisioning start failed");
 
     ESP_LOGI(TAG, "provisioning started, service_name=%s", CONFIG_APP_PROV_SERVICE_NAME);
     log_provisioning_info(active_strategy, CONFIG_APP_PROV_SERVICE_NAME, CONFIG_APP_PROV_SERVICE_KEY);
