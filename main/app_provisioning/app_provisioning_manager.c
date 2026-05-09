@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "app_ble_prov.h"
 #include "app_provisioning_adapter.h"
 #include "app_provisioning_strategy.h"
 #include "esp_check.h"
@@ -288,6 +289,9 @@ static void log_provisioning_info(const app_provisioning_strategy_t *strategy, c
              CONFIG_APP_PROV_POP,
              strategy->transport,
              strategy->capabilities);
+    if (strategy->transport != NULL && strcmp(strategy->transport, "ble") == 0) {
+        app_ble_prov_show_status("XiaoZhi Wi-Fi Setup", "Preparing scan code on LCD");
+    }
     print_provisioning_qrcode(strategy, service_name);
     ESP_LOGI(TAG, "==========================================");
 }
@@ -308,14 +312,19 @@ static void print_provisioning_qrcode(const app_provisioning_strategy_t *strateg
         return;
     }
 
-    ESP_LOGI(TAG, "scan QR code below with Espressif Provisioning app:");
-    esp_qrcode_config_t qrcode_config = ESP_QRCODE_CONFIG_DEFAULT();
-    qrcode_config.max_qrcode_version = 10;
-    qrcode_config.qrcode_ecc_level = ESP_QRCODE_ECC_LOW;
+    if (strategy->transport != NULL && strcmp(strategy->transport, "ble") == 0) {
+        app_ble_prov_show_qrcode(payload);
+    } else {
+        ESP_LOGI(TAG, "scan QR code below with Espressif Provisioning app:");
+        esp_qrcode_config_t qrcode_config = ESP_QRCODE_CONFIG_DEFAULT();
+        qrcode_config.max_qrcode_version = 10;
+        qrcode_config.qrcode_ecc_level = ESP_QRCODE_ECC_LOW;
 
-    esp_err_t err = esp_qrcode_generate(&qrcode_config, payload);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "generate provisioning QR code failed: %s", esp_err_to_name(err));
+        esp_err_t err = esp_qrcode_generate(&qrcode_config, payload);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "generate provisioning QR code failed: %s", esp_err_to_name(err));
+            app_ble_prov_show_status("XiaoZhi Wi-Fi Setup", "QR generation failed. Check serial logs");
+        }
     }
 }
 
