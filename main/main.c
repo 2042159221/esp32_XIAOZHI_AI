@@ -2,6 +2,7 @@
 
 #include "app_display.h"
 #include "app_provisioning_manager.h"
+#include "app_status_led.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "xiaozhi_button.h"
@@ -18,13 +19,6 @@ static void provisioning_state_cb(app_provisioning_state_t state, void *user_ctx
 
 void app_main(void)
 {
-	esp_err_t display_err = app_display_init();
-	if (display_err != ESP_OK) {
-		ESP_LOGE(TAG, "display init failed: %s", esp_err_to_name(display_err));
-	} else {
-		app_display_show_message("XiaoZhi", "Starting Wi-Fi setup service");
-	}
-
 	esp_err_t button_err = init_buttons_once();
 	if (button_err != ESP_OK) {
 		ESP_LOGE(TAG, "button init failed: %s", esp_err_to_name(button_err));
@@ -45,7 +39,12 @@ void app_main(void)
 static void start_business(void *user_ctx)
 {
 	(void)user_ctx;
+	esp_err_t display_err = app_display_init();
+	if (display_err != ESP_OK) {
+		ESP_LOGE(TAG, "display init failed after Wi-Fi connected: %s", esp_err_to_name(display_err));
+	}
 	app_display_show_message("Setup Complete", "Wi-Fi connected. XiaoZhi is ready");
+	ESP_ERROR_CHECK(app_status_led_start());
 
 	ESP_ERROR_CHECK(init_buttons_once());
 }
@@ -54,6 +53,9 @@ static void provisioning_state_cb(app_provisioning_state_t state, void *user_ctx
 {
 	(void)user_ctx;
 	ESP_LOGI(TAG, "provisioning state changed: %d", state);
+	if (!app_display_is_initialized()) {
+		return;
+	}
 
 	switch (state) {
 	case APP_PROVISIONING_STATE_UNPROVISIONED:

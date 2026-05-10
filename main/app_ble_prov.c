@@ -12,10 +12,20 @@ void app_ble_prov_show_qrcode(const char *payload)
         return;
     }
 
+    esp_err_t err = app_display_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "init display for BLE QR failed: %s", esp_err_to_name(err));
+        return;
+    }
+
     app_display_show_ble_qrcode(payload);
 }
 
 void app_ble_prov_show_status(const char *title, const char *message)
 {
+    if (!app_display_is_initialized()) {
+        return;
+    }
+
     app_display_show_message(title, message);
 }

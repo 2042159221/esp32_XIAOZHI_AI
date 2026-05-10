@@ -58,5 +58,6 @@
     "--query-driver=E:\\Espressif\\tools\\xtensa-esp-elf\\esp-13.2.0_20240530\\xtensa-esp-elf\\bin\\xtensa-esp32s3-elf-gcc.exe",
     "--compile-commands-dir=d:\\file_store\\embedderShit\\04_xiaozhi\\pro\\xiaozhi_sample\\ai-xiaozhi-sample\\build"
   ],
-  "idf.flashType": "UART"
+  "idf.flashType": "UART",
+  "idf.currentSetup": "E:\\Espressif\\frameworks\\esp-idf-v5.3.1"
 }

@@ -17,6 +17,7 @@ dependencies:
   espressif/button: ^4.1.6
   espressif/qrcode: ^0.2.0
   espressif/esp_lvgl_port: ^2.7.2
+  espressif/led_strip: ^2.5.5
   lvgl/lvgl:
     version: ^9
     public: true

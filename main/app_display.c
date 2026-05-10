@@ -15,7 +15,7 @@
 static const char *TAG = "app_display";
 
 #define APP_DISPLAY_QRCODE_SIZE 176
-#define APP_DISPLAY_BUFFER_PIXELS (BSP_LCD_H_RES * 40)
+#define APP_DISPLAY_BUFFER_PIXELS (BSP_LCD_H_RES * 20)
 #define APP_DISPLAY_QRCODE_DARK_COLOR 0x000000
 #define APP_DISPLAY_QRCODE_LIGHT_COLOR 0xFFFFFF
 #define APP_DISPLAY_QRCODE_BORDER_COLOR 0xDDDDDD
@@ -84,7 +84,7 @@ esp_err_t app_display_init(void)
         .io_handle = bsp_lcd_get_io(),
         .panel_handle = bsp_lcd_get_panel(),
         .buffer_size = APP_DISPLAY_BUFFER_PIXELS,
-        .double_buffer = true,
+        .double_buffer = false,
         .hres = display_config->h_res,
         .vres = display_config->v_res,
         .monochrome = false,
@@ -112,10 +112,14 @@ esp_err_t app_display_init(void)
     return ESP_OK;
 }
 
+bool app_display_is_initialized(void)
+{
+    return s_display_initialized;
+}
+
 void app_display_show_message(const char *title, const char *message)
 {
     if (!s_display_initialized) {
-        ESP_LOGW(TAG, "display is not initialized yet");
         return;
     }
 
@@ -140,7 +144,6 @@ void app_display_show_message(const char *title, const char *message)
 void app_display_show_ble_qrcode(const char *payload)
 {
     if (!s_display_initialized) {
-        ESP_LOGW(TAG, "display is not initialized yet");
         return;
     }
 
@@ -189,7 +192,6 @@ void app_display_show_ble_qrcode(const char *payload)
 void app_display_show_color_bars_test(void)
 {
     if (!s_display_initialized) {
-        ESP_LOGW(TAG, "display is not initialized yet");
         return;
     }
 
