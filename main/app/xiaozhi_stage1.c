@@ -22,6 +22,8 @@ static const char *TAG = "xiaozhi_stage1";
 #define UI_TEXT_TASK_CREATE_FAILED "\x4F\x54\x41\xE4\xBB\xBB\xE5\x8A\xA1\xE5\x88\x9B\xE5\xBB\xBA\xE5\xA4\xB1\xE8\xB4\xA5"
 
 static TaskHandle_t s_ota_task_handle;
+static bool s_ota_task_starting;
+static portMUX_TYPE s_ota_task_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static void log_token_len(void)
 {
@@ -108,13 +110,23 @@ static void ota_task(void *arg)
     }
 
 cleanup:
+    taskENTER_CRITICAL(&s_ota_task_lock);
     s_ota_task_handle = NULL;
+    s_ota_task_starting = false;
+    taskEXIT_CRITICAL(&s_ota_task_lock);
     vTaskDelete(NULL);
 }
 
 esp_err_t xiaozhi_stage1_start(void)
 {
-    if (s_ota_task_handle != NULL) {
+    taskENTER_CRITICAL(&s_ota_task_lock);
+    bool already_running = s_ota_task_starting || s_ota_task_handle != NULL;
+    if (!already_running) {
+        s_ota_task_starting = true;
+    }
+    taskEXIT_CRITICAL(&s_ota_task_lock);
+
+    if (already_running) {
         ESP_LOGW(TAG, "xiaozhi ota task is already running");
         return ESP_OK;
     }
@@ -125,8 +137,15 @@ esp_err_t xiaozhi_stage1_start(void)
                                      NULL,
                                      XIAOZHI_STAGE1_OTA_TASK_PRIORITY,
                                      &s_ota_task_handle);
+
+    taskENTER_CRITICAL(&s_ota_task_lock);
+    s_ota_task_starting = false;
     if (created != pdPASS) {
         s_ota_task_handle = NULL;
+    }
+    taskEXIT_CRITICAL(&s_ota_task_lock);
+
+    if (created != pdPASS) {
         ESP_LOGE(TAG, "create xiaozhi ota task failed");
         xiaozhi_ui_show_error(UI_TEXT_CONNECT_FAILED, UI_TEXT_TASK_CREATE_FAILED);
         return ESP_ERR_NO_MEM;

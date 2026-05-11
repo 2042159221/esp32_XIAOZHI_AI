@@ -126,8 +126,7 @@ static void log_token_masked(const char *label, const char *token)
     }
 
     size_t len = strlen(token);
-    int preview_len = len < 8 ? (int)len : 8;
-    ESP_LOGI(TAG, "%s: %.*s...(len=%u)", label, preview_len, token, (unsigned int)len);
+    ESP_LOGI(TAG, "%s: present, len=%u", label, (unsigned int)len);
 }
 
 static esp_err_t add_string_to_object(cJSON *object, const char *name, const char *value)
