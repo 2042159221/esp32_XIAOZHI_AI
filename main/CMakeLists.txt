@@ -3,6 +3,7 @@ idf_component_register(
         "app/app_main.c"
         "app/app_controller.c"
         "app/app_input_controller.c"
+        "app/xiaozhi_stage1.c"
         "platform/esp_platform_init.c"
         "bsp/lcd/bsp_lcd.c"
         "bsp/button/bsp_button.c"
