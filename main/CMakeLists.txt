@@ -17,6 +17,8 @@ idf_component_register(
         "infrastructure/esp_provisioning/esp_prov_strategy.c"
         "xiaozhi/xiaozhi_handle.c"
         "xiaozhi/xiaozhi_device.c"
+        "xiaozhi/xiaozhi_ota.c"
+        "xiaozhi/xiaozhi_ws.c"
     INCLUDE_DIRS
         "."
         "app"
@@ -32,5 +34,5 @@ idf_component_register(
         "services/provisioning"
         "infrastructure/esp_provisioning"
         "xiaozhi"
-    REQUIRES esp_wifi esp_netif esp_event nvs_flash wifi_provisioning esp_lcd lvgl driver led_strip esp_app_format
+    REQUIRES esp_wifi esp_netif esp_event nvs_flash wifi_provisioning esp_lcd lvgl driver led_strip esp_app_format esp_http_client json mbedtls
     PRIV_REQUIRES esp_timer)
