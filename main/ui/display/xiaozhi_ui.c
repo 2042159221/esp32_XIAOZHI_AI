@@ -15,6 +15,19 @@ static const char *TAG = "xiaozhi_ui";
 
 #define XIAOZHI_UI_QRCODE_SIZE 176
 #define XIAOZHI_UI_SAFE_TEXT(value) ((value) != NULL ? (value) : "")
+#define UI_TEXT_TITLE "\xE5\xB0\x9A\xE7\xA1\x85\xE8\xB0\xB7AI\xE5\xB0\x8F\xE6\x99\xBA"
+#define UI_TEXT_HELLO "\xE4\xBD\xA0\xE5\xA5\xBD,\xE6\x88\x91\xE6\x98\xAF\xE5\xB0\x8F\xE6\x99\xBA"
+#define UI_TEXT_PROV_TITLE "\xE8\xAF\xB7\xE6\x89\xAB\xE7\xA0\x81\xE9\x85\x8D\xE7\xBD\x91!"
+#define UI_TEXT_PROV_HINT "\xE8\xAF\xB7\xE4\xBD\xBF\xE7\x94\xA8\xE6\x89\x8B\xE6\x9C\xBA\xE6\x89\xAB\xE7\xA0\x81\xE5\xAE\x8C\xE6\x88\x90 WiFi \xE9\x85\x8D\xE7\xBD\x91"
+#define UI_TEXT_PROV_FAILED "\xE9\x85\x8D\xE7\xBD\x91\xE5\xA4\xB1\xE8\xB4\xA5"
+#define UI_TEXT_QR_EMPTY "\xE4\xBA\x8C\xE7\xBB\xB4\xE7\xA0\x81\xE5\x86\x85\xE5\xAE\xB9\xE4\xB8\xBA\xE7\xA9\xBA"
+#define UI_TEXT_QR_GEN_FAILED "\xE4\xBA\x8C\xE7\xBB\xB4\xE7\xA0\x81\xE7\x94\x9F\xE6\x88\x90\xE5\xA4\xB1\xE8\xB4\xA5"
+#define UI_TEXT_ACTIVATION_TITLE "\xE4\xBA\xA7\xE5\x93\x81\xE6\x9C\xAA\xE6\xBF\x80\xE6\xB4\xBB"
+#define UI_TEXT_ACTIVATION_FORMAT "\xE8\xAF\xB7\xE5\x85\x88\xE6\xBF\x80\xE6\xB4\xBB\xEF\xBC\x8C\xE6\xBF\x80\xE6\xB4\xBB\xE7\xA0\x81\xEF\xBC\x9A%s"
+#define UI_TEXT_UNKNOWN "\xE6\x9C\xAA\xE7\x9F\xA5"
+#define UI_TEXT_ERROR_TITLE "\xE8\xBF\x9E\xE6\x8E\xA5\xE5\xA4\xB1\xE8\xB4\xA5"
+#define UI_TEXT_OTA_TITLE "\xE6\xAD\xA3\xE5\x9C\xA8\xE8\xBF\x9E\xE6\x8E\xA5\xE5\xB0\x8F\xE6\x99\xBA"
+#define UI_TEXT_OTA_HINT "\xE6\xAD\xA3\xE5\x9C\xA8\xE8\x8E\xB7\xE5\x8F\x96\xE8\xAE\xBE\xE5\xA4\x87\xE6\xBF\x80\xE6\xB4\xBB\xE7\x8A\xB6\xE6\x80\x81..."
 
 extern const lv_font_t font_puhui_16_4;
 extern const lv_font_t font_puhui_20_4;
@@ -119,7 +132,7 @@ static void create_objects_locked(void)
     lv_obj_add_flag(s_qrcode, LV_OBJ_FLAG_HIDDEN);
 
     lv_screen_load(s_root);
-    show_status_locked("尚硅谷AI小智", "happy", "你好,我是小智");
+    show_status_locked(UI_TEXT_TITLE, "happy", UI_TEXT_HELLO);
 }
 
 esp_err_t xiaozhi_ui_init(void)
@@ -142,7 +155,7 @@ esp_err_t xiaozhi_ui_init(void)
 void xiaozhi_ui_show_qrcode(const char *payload)
 {
     if (payload == NULL || payload[0] == '\0') {
-        xiaozhi_ui_show_error("配网失败", "二维码内容为空");
+        xiaozhi_ui_show_error(UI_TEXT_PROV_FAILED, UI_TEXT_QR_EMPTY);
         return;
     }
 
@@ -151,8 +164,8 @@ void xiaozhi_ui_show_qrcode(const char *payload)
     }
 
     lvgl_port_lock(0);
-    lv_label_set_text(s_title_label, "请扫码配网!");
-    lv_label_set_text(s_text_label, "请使用手机扫码完成 WiFi 配网");
+    lv_label_set_text(s_title_label, UI_TEXT_PROV_TITLE);
+    lv_label_set_text(s_text_label, UI_TEXT_PROV_HINT);
     lv_obj_add_flag(s_emoji_label, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_text_label, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_qrcode, LV_OBJ_FLAG_HIDDEN);
@@ -162,7 +175,7 @@ void xiaozhi_ui_show_qrcode(const char *payload)
         lv_obj_add_flag(s_qrcode, LV_OBJ_FLAG_HIDDEN);
         lvgl_port_unlock();
         ESP_LOGE(TAG, "update QR code failed");
-        xiaozhi_ui_show_error("配网失败", "二维码生成失败");
+        xiaozhi_ui_show_error(UI_TEXT_PROV_FAILED, UI_TEXT_QR_GEN_FAILED);
         return;
     }
     lvgl_port_unlock();
@@ -210,15 +223,15 @@ void xiaozhi_ui_show_activation_required(const char *activation_code)
     char message[96];
     snprintf(message,
              sizeof(message),
-             "请先激活，激活码：%s",
-             activation_code != NULL && activation_code[0] != '\0' ? activation_code : "未知");
+             UI_TEXT_ACTIVATION_FORMAT,
+             activation_code != NULL && activation_code[0] != '\0' ? activation_code : UI_TEXT_UNKNOWN);
 
     if (xiaozhi_ui_init() != ESP_OK) {
         return;
     }
 
     lvgl_port_lock(0);
-    show_status_locked("产品未激活", "crying", message);
+    show_status_locked(UI_TEXT_ACTIVATION_TITLE, "crying", message);
     lvgl_port_unlock();
 }
 
@@ -229,7 +242,7 @@ void xiaozhi_ui_show_welcome(void)
     }
 
     lvgl_port_lock(0);
-    show_status_locked("尚硅谷AI小智", "happy", "你好,我是小智");
+    show_status_locked(UI_TEXT_TITLE, "happy", UI_TEXT_HELLO);
     lvgl_port_unlock();
 }
 
@@ -240,7 +253,7 @@ void xiaozhi_ui_show_error(const char *title, const char *message)
     }
 
     lvgl_port_lock(0);
-    show_status_locked(title != NULL && title[0] != '\0' ? title : "连接失败", "sad", XIAOZHI_UI_SAFE_TEXT(message));
+    show_status_locked(title != NULL && title[0] != '\0' ? title : UI_TEXT_ERROR_TITLE, "sad", XIAOZHI_UI_SAFE_TEXT(message));
     lvgl_port_unlock();
 }
 
@@ -251,6 +264,6 @@ void xiaozhi_ui_show_ota_loading(void)
     }
 
     lvgl_port_lock(0);
-    show_status_locked("正在连接小智", "thinking", "正在获取设备激活状态...");
+    show_status_locked(UI_TEXT_OTA_TITLE, "thinking", UI_TEXT_OTA_HINT);
     lvgl_port_unlock();
 }
