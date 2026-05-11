@@ -8,6 +8,7 @@ idf_component_register(
         "bsp/button/bsp_button.c"
         "bsp/led/bsp_led_strip.c"
         "ui/display/display_service.c"
+        "ui/display/xiaozhi_ui.c"
         "ui/screens/provisioning_screen.c"
         "ui/led/status_led_service.c"
         "services/network/wifi_sta_service.c"
