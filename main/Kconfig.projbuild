@@ -67,6 +67,35 @@ menu "Xiaozhi WiFi STA Configuration"
 
 endmenu
 
+menu "Xiaozhi Agent Stage1 Configuration"
+
+    config XIAOZHI_OTA_URL
+        string "Xiaozhi OTA URL"
+        default "https://api.tenclass.net/xiaozhi/ota/"
+        help
+            HTTPS endpoint used after WiFi provisioning to request websocket and activation information.
+
+    config XIAOZHI_BOARD_NAME
+        string "Xiaozhi board name"
+        default "atguigu-ai-xiaozhi-doorbell"
+        help
+            Board name sent in OTA request body and User-Agent.
+
+    config XIAOZHI_BOARD_TYPE
+        string "Xiaozhi board type"
+        default "esp32s3"
+        help
+            Board type sent in OTA request body and User-Agent.
+
+    config XIAOZHI_HTTP_TIMEOUT_MS
+        int "Xiaozhi HTTP timeout (ms)"
+        default 10000
+        range 1000 60000
+        help
+            Timeout for the stage1 OTA activation HTTP request.
+
+endmenu
+
 menu "Xiaozhi Provisioning Configuration"
 
     choice APP_PROV_TRANSPORT

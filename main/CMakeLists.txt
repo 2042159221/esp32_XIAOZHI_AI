@@ -3,11 +3,13 @@ idf_component_register(
         "app/app_main.c"
         "app/app_controller.c"
         "app/app_input_controller.c"
+        "app/xiaozhi_stage1.c"
         "platform/esp_platform_init.c"
         "bsp/lcd/bsp_lcd.c"
         "bsp/button/bsp_button.c"
         "bsp/led/bsp_led_strip.c"
         "ui/display/display_service.c"
+        "ui/display/xiaozhi_ui.c"
         "ui/screens/provisioning_screen.c"
         "ui/led/status_led_service.c"
         "services/network/wifi_sta_service.c"
@@ -15,6 +17,10 @@ idf_component_register(
         "services/provisioning/provisioning_qr_payload.c"
         "infrastructure/esp_provisioning/esp_prov_adapter.c"
         "infrastructure/esp_provisioning/esp_prov_strategy.c"
+        "xiaozhi/xiaozhi_handle.c"
+        "xiaozhi/xiaozhi_device.c"
+        "xiaozhi/xiaozhi_ota.c"
+        "xiaozhi/xiaozhi_ws.c"
     INCLUDE_DIRS
         "."
         "app"
@@ -29,5 +35,6 @@ idf_component_register(
         "services/network"
         "services/provisioning"
         "infrastructure/esp_provisioning"
-    REQUIRES esp_wifi esp_netif esp_event nvs_flash wifi_provisioning esp_lcd lvgl driver led_strip
+        "xiaozhi"
+    REQUIRES esp_wifi esp_netif esp_event nvs_flash wifi_provisioning esp_lcd lvgl driver led_strip esp_app_format esp_http_client json mbedtls
     PRIV_REQUIRES esp_timer)
