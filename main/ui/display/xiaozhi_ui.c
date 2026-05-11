@@ -85,9 +85,26 @@ static void show_status_locked(const char *title, const char *emoji_name, const 
     lv_label_set_text(s_text_label, XIAOZHI_UI_SAFE_TEXT(text));
 }
 
-static void create_objects_locked(void)
+static void reset_objects_locked(void)
+{
+    if (s_root != NULL) {
+        lv_obj_delete(s_root);
+    }
+
+    s_root = NULL;
+    s_title_label = NULL;
+    s_emoji_label = NULL;
+    s_text_label = NULL;
+    s_qrcode = NULL;
+}
+
+static esp_err_t create_objects_locked(void)
 {
     s_root = lv_obj_create(NULL);
+    if (s_root == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+
     lv_obj_remove_style_all(s_root);
     lv_obj_set_style_bg_color(s_root, lv_color_hex(0xF7F9FA), 0);
     lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, 0);
@@ -97,6 +114,9 @@ static void create_objects_locked(void)
     lv_obj_set_style_pad_bottom(s_root, 12, 0);
 
     s_title_label = lv_label_create(s_root);
+    if (s_title_label == NULL) {
+        goto no_mem;
+    }
     lv_obj_set_width(s_title_label, BSP_LCD_H_RES - 28);
     lv_label_set_long_mode(s_title_label, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(s_title_label, LV_TEXT_ALIGN_CENTER, 0);
@@ -105,6 +125,9 @@ static void create_objects_locked(void)
     lv_obj_align(s_title_label, LV_ALIGN_TOP_MID, 0, 10);
 
     s_emoji_label = lv_label_create(s_root);
+    if (s_emoji_label == NULL) {
+        goto no_mem;
+    }
     lv_obj_set_width(s_emoji_label, BSP_LCD_H_RES - 28);
     lv_obj_set_style_text_align(s_emoji_label, LV_TEXT_ALIGN_CENTER, 0);
     const lv_font_t *emoji_font = font_emoji_64_init();
@@ -112,6 +135,9 @@ static void create_objects_locked(void)
     lv_obj_align(s_emoji_label, LV_ALIGN_CENTER, 0, -28);
 
     s_text_label = lv_label_create(s_root);
+    if (s_text_label == NULL) {
+        goto no_mem;
+    }
     lv_obj_set_width(s_text_label, BSP_LCD_H_RES - 34);
     lv_label_set_long_mode(s_text_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(s_text_label, LV_TEXT_ALIGN_CENTER, 0);
@@ -120,6 +146,9 @@ static void create_objects_locked(void)
     lv_obj_align(s_text_label, LV_ALIGN_BOTTOM_MID, 0, -26);
 
     s_qrcode = lv_qrcode_create(s_root);
+    if (s_qrcode == NULL) {
+        goto no_mem;
+    }
     lv_qrcode_set_size(s_qrcode, XIAOZHI_UI_QRCODE_SIZE);
     lv_qrcode_set_dark_color(s_qrcode, lv_color_hex(0x111111));
     lv_qrcode_set_light_color(s_qrcode, lv_color_hex(0xFFFFFF));
@@ -133,6 +162,11 @@ static void create_objects_locked(void)
 
     lv_screen_load(s_root);
     show_status_locked(UI_TEXT_TITLE, "happy", UI_TEXT_HELLO);
+    return ESP_OK;
+
+no_mem:
+    reset_objects_locked();
+    return ESP_ERR_NO_MEM;
 }
 
 esp_err_t xiaozhi_ui_init(void)
@@ -144,8 +178,9 @@ esp_err_t xiaozhi_ui_init(void)
     ESP_RETURN_ON_ERROR(display_service_init(), TAG, "init display service failed");
 
     lvgl_port_lock(0);
-    create_objects_locked();
+    esp_err_t err = create_objects_locked();
     lvgl_port_unlock();
+    ESP_RETURN_ON_ERROR(err, TAG, "create xiaozhi ui objects failed");
 
     s_ui_initialized = true;
     ESP_LOGI(TAG, "xiaozhi ui initialized");

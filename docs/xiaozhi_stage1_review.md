@@ -46,6 +46,7 @@ Commits:
 Build Status:
 
 - `idf.py build` passed on branch `qa/xiaozhi-build-fixes` on 2026-05-11.
+- Follow-up build passed on branch `qa/xiaozhi-review-fixes` on 2026-05-11 after review hardening.
 - Verified app binary size fits the updated `factory` partition after font and partition adjustments.
 
 Risks:
@@ -62,7 +63,7 @@ Ready To Merge: yes
 
 ## Findings
 
-No blocking defects were found in the reviewed diff.
+No blocking defects remain after the follow-up review fixes.
 
 1. Diff scope is clean and limited to stage1 delivery.
    - No unrelated user workspace changes such as `.vscode/`, `daily_Report/`, or `sdkconfig*` are part of `master...qa/xiaozhi-build-fixes`.
@@ -91,3 +92,11 @@ No blocking defects were found in the reviewed diff.
 1. Runtime response compatibility with the live OTA endpoint still needs on-device validation.
 2. The current build passes with the basic Chinese font subset, but any later UI copy expansion should be checked for glyph coverage.
 3. The enlarged app partition reduces SPIFFS headroom and should be acknowledged before future media-heavy features are added.
+
+## Follow-Up Review Fixes
+
+The asynchronous Review Agent reported three hardening items after the initial report was written. They were addressed in `fix(review): harden xiaozhi stage1 review findings`.
+
+1. Token logs no longer print a token prefix; OTA logs only presence and length.
+2. OTA task start is guarded by a FreeRTOS critical section and a `starting` flag to avoid concurrent duplicate task creation.
+3. LVGL object creation now checks allocation results and rolls back partially created objects on failure.
