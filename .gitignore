@@ -27,3 +27,6 @@ Thumbs.db
 # Python cache
 __pycache__/
 *.py[cod]
+
+# Local daily notes
+daily_Report/
