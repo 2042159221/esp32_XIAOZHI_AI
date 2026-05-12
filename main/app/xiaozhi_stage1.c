@@ -18,11 +18,11 @@ static const char *TAG = "xiaozhi_stage1";
 #define XIAOZHI_STAGE1_OTA_TASK_STACK 8192
 #define XIAOZHI_STAGE1_OTA_TASK_PRIORITY 5
 #define XIAOZHI_STAGE1_ACTIVATION_POLL_MS 3000
-#define UI_TEXT_CONNECT_FAILED "\xE8\xBF\x9E\xE6\x8E\xA5\xE5\xA4\xB1\xE8\xB4\xA5"
-#define UI_TEXT_INIT_FAILED "\xE8\xAE\xBE\xE5\xA4\x87\xE5\x88\x9D\xE5\xA7\x8B\xE5\x8C\x96\xE5\xA4\xB1\xE8\xB4\xA5"
-#define UI_TEXT_CHECK_NETWORK "\xE8\xAF\xB7\xE6\xA3\x80\xE6\x9F\xA5\xE7\xBD\x91\xE7\xBB\x9C\xE6\x88\x96\xE6\x9C\x8D\xE5\x8A\xA1\xE5\x99\xA8"
-#define UI_TEXT_TASK_CREATE_FAILED "\x4F\x54\x41\xE4\xBB\xBB\xE5\x8A\xA1\xE5\x88\x9B\xE5\xBB\xBA\xE5\xA4\xB1\xE8\xB4\xA5"
-#define UI_TEXT_AI_START_FAILED "\x41\x49\xE5\x90\xAF\xE5\x8A\xA8\xE5\xA4\xB1\xE8\xB4\xA5"
+#define UI_TEXT_CONNECT_FAILED "连接失败"
+#define UI_TEXT_INIT_FAILED "设备初始化失败"
+#define UI_TEXT_CHECK_NETWORK "请检查网络或服务器"
+#define UI_TEXT_TASK_CREATE_FAILED "OTA任务创建失败"
+#define UI_TEXT_AI_START_FAILED "AI启动失败"
 
 static TaskHandle_t s_ota_task_handle;
 static bool s_ota_task_starting;
