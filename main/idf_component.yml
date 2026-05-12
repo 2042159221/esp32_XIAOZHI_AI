@@ -18,6 +18,9 @@ dependencies:
   espressif/qrcode: ^0.2.0
   espressif/esp_lvgl_port: ^2.7.2
   espressif/led_strip: ^2.5.5
+  espressif/esp_codec_dev: ^1.4.0
+  espressif/esp_audio_codec: ^2.3.0
+  espressif/esp_websocket_client: ^1.4.0
   78/xiaozhi-fonts: "1.6.0"
   lvgl/lvgl:
     version: ^9
