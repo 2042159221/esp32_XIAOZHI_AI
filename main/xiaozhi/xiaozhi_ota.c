@@ -129,6 +129,31 @@ static void log_token_masked(const char *label, const char *token)
     ESP_LOGI(TAG, "%s: present, len=%u", label, (unsigned int)len);
 }
 
+static char *format_user_agent(void)
+{
+    const char *board_name = xiaozhi_device_get_board_name();
+    const char *app_version = xiaozhi_device_get_app_version();
+    const char *board_type = xiaozhi_device_get_board_type();
+
+    int required = snprintf(NULL, 0, "%s/%s %s", board_name, app_version, board_type);
+    if (required < 0) {
+        return NULL;
+    }
+
+    char *user_agent = (char *)malloc((size_t)required + 1);
+    if (user_agent == NULL) {
+        return NULL;
+    }
+
+    int written = snprintf(user_agent, (size_t)required + 1, "%s/%s %s", board_name, app_version, board_type);
+    if (written != required) {
+        free(user_agent);
+        return NULL;
+    }
+
+    return user_agent;
+}
+
 static esp_err_t add_string_to_object(cJSON *object, const char *name, const char *value)
 {
     ESP_RETURN_ON_FALSE(object != NULL && name != NULL && value != NULL, ESP_ERR_INVALID_ARG, TAG, "json string arg is null");
@@ -331,19 +356,18 @@ esp_err_t xiaozhi_ota_request(const xiaozhi_ota_config_t *config)
 
     char uuid[XIAOZHI_UUID_STR_LEN] = {0};
     char mac[XIAOZHI_MAC_STR_LEN] = {0};
-    char user_agent[128] = {0};
     ESP_RETURN_ON_ERROR(xiaozhi_device_get_or_create_uuid(uuid, sizeof(uuid)), TAG, "get uuid failed");
     ESP_RETURN_ON_ERROR(xiaozhi_device_get_mac_str(mac, sizeof(mac)), TAG, "get mac failed");
-    snprintf(user_agent,
-             sizeof(user_agent),
-             "%s/%s %s",
-             xiaozhi_device_get_board_name(),
-             xiaozhi_device_get_app_version(),
-             xiaozhi_device_get_board_type());
 
     char *request_body = NULL;
     err = build_request_body(&request_body);
     ESP_RETURN_ON_ERROR(err, TAG, "build ota request body failed");
+
+    char *user_agent = format_user_agent();
+    if (user_agent == NULL) {
+        cJSON_free(request_body);
+        return ESP_ERR_NO_MEM;
+    }
 
     xiaozhi_http_response_t response = {0};
     esp_http_client_config_t http_config = {
@@ -357,6 +381,7 @@ esp_err_t xiaozhi_ota_request(const xiaozhi_ota_config_t *config)
 
     esp_http_client_handle_t client = esp_http_client_init(&http_config);
     if (client == NULL) {
+        free(user_agent);
         cJSON_free(request_body);
         return ESP_ERR_NO_MEM;
     }
@@ -404,6 +429,7 @@ esp_err_t xiaozhi_ota_request(const xiaozhi_ota_config_t *config)
 
 cleanup:
     esp_http_client_cleanup(client);
+    free(user_agent);
     cJSON_free(request_body);
     response_buffer_free(&response);
     return err;

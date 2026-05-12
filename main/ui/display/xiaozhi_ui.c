@@ -1,6 +1,7 @@
 #include "xiaozhi_ui.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "bsp_lcd.h"
@@ -15,22 +16,23 @@ static const char *TAG = "xiaozhi_ui";
 
 #define XIAOZHI_UI_QRCODE_SIZE 176
 #define XIAOZHI_UI_SAFE_TEXT(value) ((value) != NULL ? (value) : "")
-#define UI_TEXT_TITLE "\xE5\xB0\x9A\xE7\xA1\x85\xE8\xB0\xB7" "AI" "\xE5\xB0\x8F\xE6\x99\xBA"
-#define UI_TEXT_HELLO "\xE4\xBD\xA0\xE5\xA5\xBD,\xE6\x88\x91\xE6\x98\xAF\xE5\xB0\x8F\xE6\x99\xBA"
-#define UI_TEXT_PROV_TITLE "\xE8\xAF\xB7\xE6\x89\xAB\xE7\xA0\x81\xE9\x85\x8D\xE7\xBD\x91!"
-#define UI_TEXT_PROV_HINT "\xE8\xAF\xB7\xE4\xBD\xBF\xE7\x94\xA8\xE6\x89\x8B\xE6\x9C\xBA\xE6\x89\xAB\xE7\xA0\x81\xE5\xAE\x8C\xE6\x88\x90 WiFi \xE9\x85\x8D\xE7\xBD\x91"
-#define UI_TEXT_PROV_FAILED "\xE9\x85\x8D\xE7\xBD\x91\xE5\xA4\xB1\xE8\xB4\xA5"
-#define UI_TEXT_QR_EMPTY "\xE4\xBA\x8C\xE7\xBB\xB4\xE7\xA0\x81\xE5\x86\x85\xE5\xAE\xB9\xE4\xB8\xBA\xE7\xA9\xBA"
-#define UI_TEXT_QR_GEN_FAILED "\xE4\xBA\x8C\xE7\xBB\xB4\xE7\xA0\x81\xE7\x94\x9F\xE6\x88\x90\xE5\xA4\xB1\xE8\xB4\xA5"
-#define UI_TEXT_ACTIVATION_TITLE "\xE4\xBA\xA7\xE5\x93\x81\xE6\x9C\xAA\xE6\xBF\x80\xE6\xB4\xBB"
-#define UI_TEXT_ACTIVATION_FORMAT "\xE8\xAF\xB7\xE5\x85\x88\xE6\xBF\x80\xE6\xB4\xBB\xEF\xBC\x8C\xE6\xBF\x80\xE6\xB4\xBB\xE7\xA0\x81\xEF\xBC\x9A%s"
-#define UI_TEXT_UNKNOWN "\xE6\x9C\xAA\xE7\x9F\xA5"
-#define UI_TEXT_ERROR_TITLE "\xE8\xBF\x9E\xE6\x8E\xA5\xE5\xA4\xB1\xE8\xB4\xA5"
-#define UI_TEXT_OTA_TITLE "\xE6\xAD\xA3\xE5\x9C\xA8\xE8\xBF\x9E\xE6\x8E\xA5\xE5\xB0\x8F\xE6\x99\xBA"
-#define UI_TEXT_OTA_HINT "\xE6\xAD\xA3\xE5\x9C\xA8\xE8\x8E\xB7\xE5\x8F\x96\xE8\xAE\xBE\xE5\xA4\x87\xE6\xBF\x80\xE6\xB4\xBB\xE7\x8A\xB6\xE6\x80\x81..."
 
-extern const lv_font_t font_puhui_basic_16_4;
-extern const lv_font_t font_puhui_basic_20_4;
+#define UI_TEXT_TITLE "浮浮酱~"
+#define UI_TEXT_HELLO "hi ~ ，我是浮浮酱~"
+#define UI_TEXT_PROV_TITLE "请扫码配网!"
+#define UI_TEXT_PROV_HINT "请使用手机扫码完成 WiFi 配网"
+#define UI_TEXT_PROV_FAILED "配网失败"
+#define UI_TEXT_QR_EMPTY "二维码内容为空"
+#define UI_TEXT_QR_GEN_FAILED "二维码生成失败"
+#define UI_TEXT_ACTIVATION_TITLE "产品未激活"
+#define UI_TEXT_ACTIVATION_FORMAT "请先激活，激活码：%s"
+#define UI_TEXT_ACTIVATION_FALLBACK "请先激活，激活码：未知"
+#define UI_TEXT_UNKNOWN "未知"
+#define UI_TEXT_ERROR_TITLE "连接失败"
+#define UI_TEXT_OTA_TITLE "正在连接小智"
+#define UI_TEXT_OTA_HINT "正在获取设备激活状态..."
+
+extern const lv_font_t font_puhui_20_4;
 
 typedef struct {
     const char *name;
@@ -65,6 +67,27 @@ static const char *find_emoji(const char *name)
     }
 
     return s_emoji_map[0].emoji;
+}
+
+static char *format_activation_message(const char *code)
+{
+    int required = snprintf(NULL, 0, UI_TEXT_ACTIVATION_FORMAT, code);
+    if (required < 0) {
+        return NULL;
+    }
+
+    char *message = (char *)malloc((size_t)required + 1);
+    if (message == NULL) {
+        return NULL;
+    }
+
+    int written = snprintf(message, (size_t)required + 1, UI_TEXT_ACTIVATION_FORMAT, code);
+    if (written != required) {
+        free(message);
+        return NULL;
+    }
+
+    return message;
 }
 
 static void hide_qrcode(void)
@@ -108,8 +131,8 @@ static esp_err_t create_objects_locked(void)
     lv_obj_remove_style_all(s_root);
     lv_obj_set_style_bg_color(s_root, lv_color_hex(0xF7F9FA), 0);
     lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_left(s_root, 14, 0);
-    lv_obj_set_style_pad_right(s_root, 14, 0);
+    lv_obj_set_style_pad_left(s_root, 10, 0);
+    lv_obj_set_style_pad_right(s_root, 10, 0);
     lv_obj_set_style_pad_top(s_root, 12, 0);
     lv_obj_set_style_pad_bottom(s_root, 12, 0);
 
@@ -117,18 +140,18 @@ static esp_err_t create_objects_locked(void)
     if (s_title_label == NULL) {
         goto no_mem;
     }
-    lv_obj_set_width(s_title_label, BSP_LCD_H_RES - 28);
+    lv_obj_set_width(s_title_label, BSP_LCD_H_RES - 20);
     lv_label_set_long_mode(s_title_label, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(s_title_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_title_label, lv_color_hex(0x15202B), 0);
-    lv_obj_set_style_text_font(s_title_label, &font_puhui_basic_20_4, 0);
+    lv_obj_set_style_text_font(s_title_label, &font_puhui_20_4, 0);
     lv_obj_align(s_title_label, LV_ALIGN_TOP_MID, 0, 10);
 
     s_emoji_label = lv_label_create(s_root);
     if (s_emoji_label == NULL) {
         goto no_mem;
     }
-    lv_obj_set_width(s_emoji_label, BSP_LCD_H_RES - 28);
+    lv_obj_set_width(s_emoji_label, BSP_LCD_H_RES - 20);
     lv_obj_set_style_text_align(s_emoji_label, LV_TEXT_ALIGN_CENTER, 0);
     const lv_font_t *emoji_font = font_emoji_64_init();
     lv_obj_set_style_text_font(s_emoji_label, emoji_font != NULL ? emoji_font : &lv_font_montserrat_20, 0);
@@ -138,12 +161,13 @@ static esp_err_t create_objects_locked(void)
     if (s_text_label == NULL) {
         goto no_mem;
     }
-    lv_obj_set_width(s_text_label, BSP_LCD_H_RES - 34);
+    lv_obj_set_width(s_text_label, BSP_LCD_H_RES - 22);
     lv_label_set_long_mode(s_text_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(s_text_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_text_label, lv_color_hex(0x334155), 0);
-    lv_obj_set_style_text_font(s_text_label, &font_puhui_basic_16_4, 0);
-    lv_obj_align(s_text_label, LV_ALIGN_BOTTOM_MID, 0, -26);
+    lv_obj_set_style_text_font(s_text_label, &font_puhui_20_4, 0);
+    lv_obj_set_style_text_line_space(s_text_label, 4, 0);
+    lv_obj_align(s_text_label, LV_ALIGN_BOTTOM_MID, 0, -18);
 
     s_qrcode = lv_qrcode_create(s_root);
     if (s_qrcode == NULL) {
@@ -255,19 +279,21 @@ void xiaozhi_ui_show_emoji(const char *emoji_name)
 
 void xiaozhi_ui_show_activation_required(const char *activation_code)
 {
-    char message[96];
-    snprintf(message,
-             sizeof(message),
-             UI_TEXT_ACTIVATION_FORMAT,
-             activation_code != NULL && activation_code[0] != '\0' ? activation_code : UI_TEXT_UNKNOWN);
-
     if (xiaozhi_ui_init() != ESP_OK) {
         return;
     }
 
+    const char *code = activation_code != NULL && activation_code[0] != '\0' ? activation_code : UI_TEXT_UNKNOWN;
+    char *message = format_activation_message(code);
+    if (message == NULL) {
+        ESP_LOGW(TAG, "format activation message failed");
+    }
+
     lvgl_port_lock(0);
-    show_status_locked(UI_TEXT_ACTIVATION_TITLE, "crying", message);
+    show_status_locked(UI_TEXT_ACTIVATION_TITLE, "crying", message != NULL ? message : UI_TEXT_ACTIVATION_FALLBACK);
     lvgl_port_unlock();
+
+    free(message);
 }
 
 void xiaozhi_ui_show_welcome(void)
