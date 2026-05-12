@@ -29,7 +29,6 @@ static const char *TAG = "xiaozhi_ui";
 #define UI_TEXT_OTA_TITLE "\xE6\xAD\xA3\xE5\x9C\xA8\xE8\xBF\x9E\xE6\x8E\xA5\xE5\xB0\x8F\xE6\x99\xBA"
 #define UI_TEXT_OTA_HINT "\xE6\xAD\xA3\xE5\x9C\xA8\xE8\x8E\xB7\xE5\x8F\x96\xE8\xAE\xBE\xE5\xA4\x87\xE6\xBF\x80\xE6\xB4\xBB\xE7\x8A\xB6\xE6\x80\x81..."
 
-extern const lv_font_t font_puhui_16_4;
 extern const lv_font_t font_puhui_20_4;
 
 typedef struct {
@@ -108,8 +107,8 @@ static esp_err_t create_objects_locked(void)
     lv_obj_remove_style_all(s_root);
     lv_obj_set_style_bg_color(s_root, lv_color_hex(0xF7F9FA), 0);
     lv_obj_set_style_bg_opa(s_root, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_left(s_root, 14, 0);
-    lv_obj_set_style_pad_right(s_root, 14, 0);
+    lv_obj_set_style_pad_left(s_root, 10, 0);
+    lv_obj_set_style_pad_right(s_root, 10, 0);
     lv_obj_set_style_pad_top(s_root, 12, 0);
     lv_obj_set_style_pad_bottom(s_root, 12, 0);
 
@@ -117,7 +116,7 @@ static esp_err_t create_objects_locked(void)
     if (s_title_label == NULL) {
         goto no_mem;
     }
-    lv_obj_set_width(s_title_label, BSP_LCD_H_RES - 28);
+    lv_obj_set_width(s_title_label, BSP_LCD_H_RES - 20);
     lv_label_set_long_mode(s_title_label, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(s_title_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_title_label, lv_color_hex(0x15202B), 0);
@@ -128,7 +127,7 @@ static esp_err_t create_objects_locked(void)
     if (s_emoji_label == NULL) {
         goto no_mem;
     }
-    lv_obj_set_width(s_emoji_label, BSP_LCD_H_RES - 28);
+    lv_obj_set_width(s_emoji_label, BSP_LCD_H_RES - 20);
     lv_obj_set_style_text_align(s_emoji_label, LV_TEXT_ALIGN_CENTER, 0);
     const lv_font_t *emoji_font = font_emoji_64_init();
     lv_obj_set_style_text_font(s_emoji_label, emoji_font != NULL ? emoji_font : &lv_font_montserrat_20, 0);
@@ -138,12 +137,13 @@ static esp_err_t create_objects_locked(void)
     if (s_text_label == NULL) {
         goto no_mem;
     }
-    lv_obj_set_width(s_text_label, BSP_LCD_H_RES - 34);
+    lv_obj_set_width(s_text_label, BSP_LCD_H_RES - 22);
     lv_label_set_long_mode(s_text_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(s_text_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_text_label, lv_color_hex(0x334155), 0);
-    lv_obj_set_style_text_font(s_text_label, &font_puhui_16_4, 0);
-    lv_obj_align(s_text_label, LV_ALIGN_BOTTOM_MID, 0, -26);
+    lv_obj_set_style_text_font(s_text_label, &font_puhui_20_4, 0);
+    lv_obj_set_style_text_line_space(s_text_label, 4, 0);
+    lv_obj_align(s_text_label, LV_ALIGN_BOTTOM_MID, 0, -18);
 
     s_qrcode = lv_qrcode_create(s_root);
     if (s_qrcode == NULL) {
