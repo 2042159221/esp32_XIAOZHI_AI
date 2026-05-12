@@ -29,8 +29,8 @@ static const char *TAG = "xiaozhi_ui";
 #define UI_TEXT_OTA_TITLE "\xE6\xAD\xA3\xE5\x9C\xA8\xE8\xBF\x9E\xE6\x8E\xA5\xE5\xB0\x8F\xE6\x99\xBA"
 #define UI_TEXT_OTA_HINT "\xE6\xAD\xA3\xE5\x9C\xA8\xE8\x8E\xB7\xE5\x8F\x96\xE8\xAE\xBE\xE5\xA4\x87\xE6\xBF\x80\xE6\xB4\xBB\xE7\x8A\xB6\xE6\x80\x81..."
 
-extern const lv_font_t font_puhui_basic_16_4;
-extern const lv_font_t font_puhui_basic_20_4;
+extern const lv_font_t font_puhui_16_4;
+extern const lv_font_t font_puhui_20_4;
 
 typedef struct {
     const char *name;
@@ -121,7 +121,7 @@ static esp_err_t create_objects_locked(void)
     lv_label_set_long_mode(s_title_label, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(s_title_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_title_label, lv_color_hex(0x15202B), 0);
-    lv_obj_set_style_text_font(s_title_label, &font_puhui_basic_20_4, 0);
+    lv_obj_set_style_text_font(s_title_label, &font_puhui_20_4, 0);
     lv_obj_align(s_title_label, LV_ALIGN_TOP_MID, 0, 10);
 
     s_emoji_label = lv_label_create(s_root);
@@ -142,7 +142,7 @@ static esp_err_t create_objects_locked(void)
     lv_label_set_long_mode(s_text_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(s_text_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_text_label, lv_color_hex(0x334155), 0);
-    lv_obj_set_style_text_font(s_text_label, &font_puhui_basic_16_4, 0);
+    lv_obj_set_style_text_font(s_text_label, &font_puhui_16_4, 0);
     lv_obj_align(s_text_label, LV_ALIGN_BOTTOM_MID, 0, -26);
 
     s_qrcode = lv_qrcode_create(s_root);

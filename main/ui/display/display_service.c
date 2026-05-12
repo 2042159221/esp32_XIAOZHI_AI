@@ -21,6 +21,9 @@ static const char *TAG = "display_service";
 #define DISPLAY_SERVICE_QRCODE_LIGHT_COLOR 0xFFFFFF
 #define DISPLAY_SERVICE_QRCODE_BORDER_COLOR 0xDDDDDD
 
+extern const lv_font_t font_puhui_16_4;
+extern const lv_font_t font_puhui_20_4;
+
 static bool s_display_initialized;
 static lv_display_t *s_lvgl_display;
 static lv_obj_t *s_screen;
@@ -55,7 +58,7 @@ static void display_service_create_base_screen(void)
     lv_obj_set_width(s_title_label, lv_pct(100));
     lv_obj_set_style_text_align(s_title_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_title_label, lv_color_hex(0x111111), 0);
-    lv_obj_set_style_text_font(s_title_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_title_label, &font_puhui_20_4, 0);
     lv_obj_align(s_title_label, LV_ALIGN_TOP_MID, 0, 8);
 
     s_hint_label = lv_label_create(s_screen);
@@ -63,7 +66,7 @@ static void display_service_create_base_screen(void)
     lv_obj_set_width(s_hint_label, BSP_LCD_H_RES - 40);
     lv_obj_set_style_text_align(s_hint_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_hint_label, lv_color_hex(0x666666), 0);
-    lv_obj_set_style_text_font(s_hint_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_hint_label, &font_puhui_16_4, 0);
     lv_obj_align(s_hint_label, LV_ALIGN_BOTTOM_MID, 0, -12);
 
     lv_screen_load(s_screen);
@@ -135,7 +138,7 @@ void display_service_show_message(const char *title, const char *message)
     lv_label_set_long_mode(s_message_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_align(s_message_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(s_message_label, lv_color_hex(0x222222), 0);
-    lv_obj_set_style_text_font(s_message_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_message_label, &font_puhui_16_4, 0);
     lv_label_set_text(s_message_label, message != NULL ? message : "");
     lv_obj_align(s_message_label, LV_ALIGN_CENTER, 0, 0);
 
