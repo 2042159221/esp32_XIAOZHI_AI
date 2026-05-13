@@ -11,6 +11,7 @@ compile_commands.json
 *.log
 
 # ESP-IDF generated artifacts
+test_apps/**/sdkconfig
 sdkconfig.defaults.*
 flasher_args.json
 flash_args

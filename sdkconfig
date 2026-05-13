@@ -555,7 +555,7 @@ CONFIG_XIAOZHI_OTA_URL="https://api.tenclass.net/xiaozhi/ota/"
 CONFIG_XIAOZHI_BOARD_NAME="atguigu-ai-xiaozhi-doorbell"
 CONFIG_XIAOZHI_BOARD_TYPE="esp32s3"
 CONFIG_XIAOZHI_HTTP_TIMEOUT_MS=10000
-# CONFIG_XIAOZHI_AUDIO_BOOT_LOOPBACK_TEST is not set
+# CONFIG_XIAOZHI_AUDIO_DIAG_ENABLE is not set
 # end of Xiaozhi Agent Stage1 Configuration
 
 #

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "driver/i2c_master.h"
 #include "esp_codec_dev.h"
 #include "esp_err.h"
 
@@ -13,6 +14,8 @@ extern "C" {
 
 esp_err_t bsp_audio_init(void);
 esp_codec_dev_handle_t bsp_audio_get_codec(void);
+i2c_master_bus_handle_t bsp_audio_get_i2c_bus(void);
+esp_err_t bsp_audio_init_i2c_bus(void);
 esp_err_t bsp_audio_open(void);
 esp_err_t bsp_audio_set_volume(int volume);
 

@@ -1,0 +1,6 @@
+dependencies:
+  idf:
+    version: '>=5.3.0'
+  espressif/esp_codec_dev: ^1.4.0
+  espressif/esp_audio_codec: ^2.3.0
+  espressif/esp_websocket_client: ^1.4.0

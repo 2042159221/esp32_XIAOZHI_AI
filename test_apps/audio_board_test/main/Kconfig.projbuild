@@ -1,0 +1,129 @@
+menu "Audio Board Test"
+
+    config AUDIO_BOARD_TEST_RUN_I2C_SCAN
+        bool "Run audio I2C scan"
+        default y
+
+    config AUDIO_BOARD_TEST_RUN_1KHZ_TONE
+        bool "Play 1 kHz test tone"
+        default y
+
+    config AUDIO_BOARD_TEST_RUN_MIC_RMS
+        bool "Print microphone min/max/RMS"
+        default y
+
+    config AUDIO_BOARD_TEST_RUN_LOCAL_LOOPBACK
+        bool "Run local mic-to-speaker loopback"
+        default n
+        help
+            Disabled by default to avoid acoustic feedback. Enable only during
+            controlled bench testing.
+
+    config AUDIO_BOARD_TEST_RUN_WS_ECHO
+        bool "Run WebSocket PCM echo test"
+        default n
+        help
+            Connects to a PC WebSocket echo server, uploads binary PCM from
+            microphone, and plays binary PCM received from the server.
+
+    config AUDIO_BOARD_TEST_WS_URI
+        string "WebSocket echo server URI"
+        depends on AUDIO_BOARD_TEST_RUN_WS_ECHO
+        default "ws://192.168.1.100:8765"
+
+    config AUDIO_BOARD_TEST_WS_DURATION_MS
+        int "WebSocket echo test duration (ms)"
+        depends on AUDIO_BOARD_TEST_RUN_WS_ECHO
+        default 10000
+        range 1000 300000
+
+    config AUDIO_BOARD_TEST_WS_TOKEN
+        string "Optional WebSocket Authorization header"
+        depends on AUDIO_BOARD_TEST_RUN_WS_ECHO
+        default ""
+
+    config XIAOZHI_AUDIO_DIAG_TONE_MS
+        int "Audio diagnostics 1 kHz tone duration (ms)"
+        default 500
+        range 20 10000
+
+    config XIAOZHI_AUDIO_DIAG_MIC_RMS_DURATION_MS
+        int "Audio diagnostics mic RMS total duration (ms)"
+        default 5000
+        range 100 60000
+
+    config XIAOZHI_AUDIO_DIAG_MIC_RMS_WINDOW_MS
+        int "Audio diagnostics mic RMS log window (ms)"
+        default 500
+        range 20 10000
+
+    config XIAOZHI_AUDIO_DIAG_LOOPBACK_MS
+        int "Audio diagnostics local loopback duration (ms)"
+        default 5000
+        range 20 60000
+
+    config XIAOZHI_AUDIO_DIAG_VOLUME
+        int "Audio diagnostics output volume"
+        default 40
+        range 0 100
+
+    config XIAOZHI_AUDIO_DIAG_TONE_AMPLITUDE
+        int "Audio diagnostics 1 kHz tone amplitude"
+        default 12000
+        range 1000 30000
+
+endmenu
+
+menu "Xiaozhi WiFi STA Configuration"
+
+    config ESP_WIFI_SSID
+        string "WiFi STA SSID"
+        default ""
+
+    config ESP_WIFI_PASSWORD
+        string "WiFi STA Password"
+        default ""
+
+    choice ESP_WIFI_SAE_MODE
+        prompt "WPA3 SAE mode selection"
+        default ESP_WPA3_SAE_PWE_BOTH
+        config ESP_WPA3_SAE_PWE_HUNT_AND_PECK
+            bool "HUNT AND PECK"
+        config ESP_WPA3_SAE_PWE_HASH_TO_ELEMENT
+            bool "H2E"
+        config ESP_WPA3_SAE_PWE_BOTH
+            bool "BOTH"
+    endchoice
+
+    config ESP_WIFI_PW_ID
+        string "PASSWORD IDENTIFIER"
+        depends on ESP_WPA3_SAE_PWE_HASH_TO_ELEMENT || ESP_WPA3_SAE_PWE_BOTH
+        default ""
+
+    config ESP_MAXIMUM_RETRY
+        int "Maximum retry"
+        default 5
+        range 1 20
+
+    choice ESP_WIFI_SCAN_AUTH_MODE_THRESHOLD
+        prompt "WiFi Scan auth mode threshold"
+        default ESP_WIFI_AUTH_WPA2_PSK
+        config ESP_WIFI_AUTH_OPEN
+            bool "OPEN"
+        config ESP_WIFI_AUTH_WEP
+            bool "WEP"
+        config ESP_WIFI_AUTH_WPA_PSK
+            bool "WPA PSK"
+        config ESP_WIFI_AUTH_WPA2_PSK
+            bool "WPA2 PSK"
+        config ESP_WIFI_AUTH_WPA_WPA2_PSK
+            bool "WPA/WPA2 PSK"
+        config ESP_WIFI_AUTH_WPA3_PSK
+            bool "WPA3 PSK"
+        config ESP_WIFI_AUTH_WPA2_WPA3_PSK
+            bool "WPA2/WPA3 PSK"
+        config ESP_WIFI_AUTH_WAPI_PSK
+            bool "WAPI PSK"
+    endchoice
+
+endmenu

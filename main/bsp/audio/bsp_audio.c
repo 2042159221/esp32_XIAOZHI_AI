@@ -2,7 +2,7 @@
 
 #include <stdbool.h>
 
-#include "board_config.h"
+#include "board_pins.h"
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
 #include "esp_check.h"
@@ -173,6 +173,16 @@ esp_err_t bsp_audio_init(void)
 esp_codec_dev_handle_t bsp_audio_get_codec(void)
 {
     return s_codec;
+}
+
+esp_err_t bsp_audio_init_i2c_bus(void)
+{
+    return init_i2c();
+}
+
+i2c_master_bus_handle_t bsp_audio_get_i2c_bus(void)
+{
+    return s_i2c_bus;
 }
 
 esp_err_t bsp_audio_open(void)

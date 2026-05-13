@@ -94,13 +94,62 @@ menu "Xiaozhi Agent Stage1 Configuration"
         help
             Timeout for the stage1 OTA activation HTTP request.
 
-    config XIAOZHI_AUDIO_BOOT_LOOPBACK_TEST
-        bool "Enable boot-time local PCM loopback test"
+    config XIAOZHI_AUDIO_DIAG_ENABLE
+        bool "Build audio diagnostics helpers"
         default n
         help
-            Run a short local microphone-to-speaker PCM loopback test during
-            websocket startup. Keep disabled in normal use to avoid power-on
-            squeal/howling.
+            Build board-level audio diagnostics helpers. This does not run
+            tone playback or local loopback automatically; callers must invoke
+            the diagnostic functions explicitly.
+
+    config XIAOZHI_AUDIO_DIAG_TONE_MS
+        int "Audio diagnostics 1 kHz tone duration (ms)"
+        depends on XIAOZHI_AUDIO_DIAG_ENABLE
+        default 500
+        range 20 10000
+        help
+            Duration used by audio_diag_play_1khz_tone().
+
+    config XIAOZHI_AUDIO_DIAG_MIC_RMS_DURATION_MS
+        int "Audio diagnostics mic RMS total duration (ms)"
+        depends on XIAOZHI_AUDIO_DIAG_ENABLE
+        default 5000
+        range 100 60000
+        help
+            Total capture duration used by audio_diag_print_mic_rms().
+
+    config XIAOZHI_AUDIO_DIAG_MIC_RMS_WINDOW_MS
+        int "Audio diagnostics mic RMS log window (ms)"
+        depends on XIAOZHI_AUDIO_DIAG_ENABLE
+        default 500
+        range 20 10000
+        help
+            Log window used by audio_diag_print_mic_rms().
+
+    config XIAOZHI_AUDIO_DIAG_LOOPBACK_MS
+        int "Audio diagnostics local loopback duration (ms)"
+        depends on XIAOZHI_AUDIO_DIAG_ENABLE
+        default 5000
+        range 20 60000
+        help
+            Duration used by audio_diag_loopback(). Keep short to reduce
+            feedback/howling risk during bench tests.
+
+    config XIAOZHI_AUDIO_DIAG_VOLUME
+        int "Audio diagnostics output volume"
+        depends on XIAOZHI_AUDIO_DIAG_ENABLE
+        default 40
+        range 0 100
+        help
+            Output volume set before diagnostic playback.
+
+    config XIAOZHI_AUDIO_DIAG_TONE_AMPLITUDE
+        int "Audio diagnostics 1 kHz tone amplitude"
+        depends on XIAOZHI_AUDIO_DIAG_ENABLE
+        default 12000
+        range 1000 30000
+        help
+            16-bit PCM amplitude used for the 1 kHz test tone.
 
 endmenu
 

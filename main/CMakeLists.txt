@@ -1,96 +1,71 @@
+set(MAIN_SRCS
+    "app/app_main.c"
+    "app/app_controller.c"
+    "app/app_input_controller.c"
+    "app/xiaozhi_stage1.c"
+    "platform/esp_platform_init.c"
+    "bsp/lcd/bsp_lcd.c"
+    "bsp/button/bsp_button.c"
+    "bsp/led/bsp_led_strip.c"
+    "bsp/audio/bsp_audio.c"
+    "ui/display/display_service.c"
+    "ui/display/xiaozhi_ui.c"
+    "ui/screens/provisioning_screen.c"
+    "ui/led/status_led_service.c"
+    "services/network/wifi_sta_service.c"
+    "services/provisioning/provisioning_service.c"
+    "services/provisioning/provisioning_qr_payload.c"
+    "services/audio/audio_pcm_service.c"
+    "infrastructure/esp_provisioning/esp_prov_adapter.c"
+    "infrastructure/esp_provisioning/esp_prov_strategy.c"
+    "xiaozhi/xiaozhi_handle.c"
+    "xiaozhi/xiaozhi_device.c"
+    "xiaozhi/xiaozhi_ota.c"
+    "xiaozhi/xiaozhi_ws.c")
+
+if(CONFIG_XIAOZHI_AUDIO_DIAG_ENABLE)
+    list(APPEND MAIN_SRCS "services/audio/audio_pcm_diag.c")
+endif()
+
 idf_component_register(
-
     SRCS
-
-        "app/app_main.c"
-
-        "app/app_controller.c"
-
-        "app/app_input_controller.c"
-
-        "app/xiaozhi_stage1.c"
-
-        "platform/esp_platform_init.c"
-
-        "bsp/lcd/bsp_lcd.c"
-
-        "bsp/button/bsp_button.c"
-
-        "bsp/led/bsp_led_strip.c"
-
-        "bsp/audio/bsp_audio.c"
-
-        "ui/display/display_service.c"
-
-        "ui/display/xiaozhi_ui.c"
-
-        "ui/screens/provisioning_screen.c"
-
-        "ui/led/status_led_service.c"
-
-        "services/network/wifi_sta_service.c"
-
-        "services/provisioning/provisioning_service.c"
-
-        "services/provisioning/provisioning_qr_payload.c"
-
-        "services/audio/audio_pcm_service.c"
-
-        "infrastructure/esp_provisioning/esp_prov_adapter.c"
-
-        "infrastructure/esp_provisioning/esp_prov_strategy.c"
-
-        "xiaozhi/xiaozhi_handle.c"
-
-        "xiaozhi/xiaozhi_device.c"
-
-        "xiaozhi/xiaozhi_ota.c"
-
-        "xiaozhi/xiaozhi_ws.c"
-
+        ${MAIN_SRCS}
     INCLUDE_DIRS
-
         "."
-
         "app"
-
         "board"
-
         "platform"
-
         "bsp/lcd"
-
         "bsp/button"
-
         "bsp/led"
-
         "bsp/audio"
-
         "ui/display"
-
         "ui/screens"
-
         "ui/led"
-
         "services/network"
-
         "services/provisioning"
-
         "services/audio"
-
         "infrastructure/esp_provisioning"
-
         "xiaozhi"
-
-    REQUIRES esp_wifi esp_netif esp_event nvs_flash wifi_provisioning esp_lcd lvgl driver led_strip esp_app_format esp_http_client esp_websocket_client esp_codec_dev json mbedtls
-
-    PRIV_REQUIRES esp_timer)
-
-
+    REQUIRES
+        esp_wifi
+        esp_netif
+        esp_event
+        nvs_flash
+        wifi_provisioning
+        esp_lcd
+        lvgl
+        driver
+        led_strip
+        esp_app_format
+        esp_http_client
+        esp_websocket_client
+        esp_codec_dev
+        json
+        mbedtls
+    PRIV_REQUIRES
+        esp_timer)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE
-
     -finput-charset=UTF-8
-
     -fexec-charset=UTF-8)
-

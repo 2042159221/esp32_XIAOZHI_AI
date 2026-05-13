@@ -28,11 +28,9 @@ static RingbufHandle_t s_playback_rb;
 static TaskHandle_t s_capture_task;
 static TaskHandle_t s_playback_task;
 static uint8_t *s_capture_frame;
-static uint8_t *s_loopback_frame;
 static audio_pcm_tx_cb_t s_tx_cb;
 static void *s_tx_user_ctx;
 static volatile bool s_stream_running;
-static volatile bool s_loopback_running;
 
 static RingbufHandle_t create_playback_ringbuffer(void)
 {
@@ -130,34 +128,6 @@ esp_err_t audio_pcm_service_init(void)
         ESP_RETURN_ON_FALSE(s_capture_frame != NULL, ESP_ERR_NO_MEM, TAG, "alloc capture frame failed");
     }
 
-    if (s_loopback_frame == NULL) {
-        s_loopback_frame = (uint8_t *)heap_caps_malloc(AUDIO_PCM_FRAME_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        ESP_RETURN_ON_FALSE(s_loopback_frame != NULL, ESP_ERR_NO_MEM, TAG, "alloc loopback frame failed");
-    }
-
-    return ESP_OK;
-}
-
-esp_err_t audio_pcm_service_local_loopback(uint32_t duration_ms)
-{
-    ESP_RETURN_ON_ERROR(audio_pcm_service_init(), TAG, "init before local loopback failed");
-
-    s_loopback_running = true;
-    int64_t remaining_ms = duration_ms;
-    while (remaining_ms > 0 && s_loopback_running) {
-        int ret = esp_codec_dev_read(bsp_audio_get_codec(), s_loopback_frame, AUDIO_PCM_FRAME_BYTES);
-        if (ret == ESP_CODEC_DEV_OK) {
-            ret = esp_codec_dev_write(bsp_audio_get_codec(), s_loopback_frame, AUDIO_PCM_FRAME_BYTES);
-        }
-        if (ret != ESP_CODEC_DEV_OK) {
-            ESP_LOGW(TAG, "local loopback frame failed: %d", ret);
-            break;
-        }
-        remaining_ms -= AUDIO_PCM_FRAME_MS;
-    }
-
-    s_loopback_running = false;
-    ESP_LOGI(TAG, "local PCM loopback probe finished");
     return ESP_OK;
 }
 

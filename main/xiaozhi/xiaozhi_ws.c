@@ -15,11 +15,6 @@ static const char *TAG = "xiaozhi_ws";
 
 static xiaozhi_ws_state_t s_ws_state = XIAOZHI_WS_STATE_IDLE;
 static esp_websocket_client_handle_t s_ws_client;
-static bool s_local_audio_checked;
-
-#ifndef CONFIG_XIAOZHI_AUDIO_BOOT_LOOPBACK_TEST
-#define CONFIG_XIAOZHI_AUDIO_BOOT_LOOPBACK_TEST 0
-#endif
 
 static void log_token_summary(const char *token)
 {
@@ -128,18 +123,6 @@ esp_err_t xiaozhi_ws_start(void)
         ESP_LOGE(TAG, "init PCM audio service failed: %s", esp_err_to_name(err));
         s_ws_state = XIAOZHI_WS_STATE_ERROR;
         return err;
-    }
-
-    if (!s_local_audio_checked && CONFIG_XIAOZHI_AUDIO_BOOT_LOOPBACK_TEST) {
-        err = audio_pcm_service_local_loopback(1200);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "local PCM loopback failed: %s", esp_err_to_name(err));
-            s_ws_state = XIAOZHI_WS_STATE_ERROR;
-            return err;
-        }
-        s_local_audio_checked = true;
-    } else if (!CONFIG_XIAOZHI_AUDIO_BOOT_LOOPBACK_TEST) {
-        s_local_audio_checked = true;
     }
 
     const esp_websocket_client_config_t websocket_cfg = {
