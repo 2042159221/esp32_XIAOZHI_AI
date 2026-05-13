@@ -8,6 +8,7 @@
 #include "cJSON.h"
 #include "esp_check.h"
 #include "esp_crt_bundle.h"
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "xiaozhi_device.h"
@@ -23,13 +24,25 @@ typedef struct {
     size_t cap;
 } xiaozhi_http_response_t;
 
+static void *xiaozhi_malloc_prefer_spiram(size_t size)
+{
+#if CONFIG_SPIRAM
+    void *ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (ptr != NULL) {
+        return ptr;
+    }
+#endif
+
+    return heap_caps_malloc(size, MALLOC_CAP_8BIT);
+}
+
 static void response_buffer_free(xiaozhi_http_response_t *response)
 {
     if (response == NULL) {
         return;
     }
 
-    free(response->data);
+    heap_caps_free(response->data);
     response->data = NULL;
     response->len = 0;
     response->cap = 0;
@@ -60,8 +73,12 @@ static esp_err_t response_buffer_append(xiaozhi_http_response_t *response, const
             next_cap = XIAOZHI_HTTP_RESPONSE_MAX_LEN + 1;
         }
 
-        char *next = (char *)realloc(response->data, next_cap);
-        ESP_RETURN_ON_FALSE(next != NULL, ESP_ERR_NO_MEM, TAG, "realloc http response failed");
+        char *next = (char *)xiaozhi_malloc_prefer_spiram(next_cap);
+        ESP_RETURN_ON_FALSE(next != NULL, ESP_ERR_NO_MEM, TAG, "alloc http response buffer failed, size=%u", (unsigned int)next_cap);
+        if (response->data != NULL && response->len > 0) {
+            memcpy(next, response->data, response->len);
+        }
+        heap_caps_free(response->data);
         response->data = next;
         response->cap = next_cap;
     }
@@ -140,14 +157,14 @@ static char *format_user_agent(void)
         return NULL;
     }
 
-    char *user_agent = (char *)malloc((size_t)required + 1);
+    char *user_agent = (char *)heap_caps_malloc((size_t)required + 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (user_agent == NULL) {
         return NULL;
     }
 
     int written = snprintf(user_agent, (size_t)required + 1, "%s/%s %s", board_name, app_version, board_type);
     if (written != required) {
-        free(user_agent);
+        heap_caps_free(user_agent);
         return NULL;
     }
 
@@ -381,7 +398,7 @@ esp_err_t xiaozhi_ota_request(const xiaozhi_ota_config_t *config)
 
     esp_http_client_handle_t client = esp_http_client_init(&http_config);
     if (client == NULL) {
-        free(user_agent);
+        heap_caps_free(user_agent);
         cJSON_free(request_body);
         return ESP_ERR_NO_MEM;
     }
@@ -429,7 +446,7 @@ esp_err_t xiaozhi_ota_request(const xiaozhi_ota_config_t *config)
 
 cleanup:
     esp_http_client_cleanup(client);
-    free(user_agent);
+    heap_caps_free(user_agent);
     cJSON_free(request_body);
     response_buffer_free(&response);
     return err;

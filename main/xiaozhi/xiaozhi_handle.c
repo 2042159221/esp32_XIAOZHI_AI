@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 
 static const char *TAG = "xiaozhi_handle";
@@ -18,7 +19,7 @@ static char *safe_strdup(const char *value)
     }
 
     size_t len = strlen(value) + 1;
-    char *copy = (char *)malloc(len);
+    char *copy = (char *)heap_caps_malloc(len, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (copy == NULL) {
         return NULL;
     }
@@ -30,11 +31,11 @@ static char *safe_strdup(const char *value)
 static void replace_owned_string(char **target, char *next)
 {
     if (target == NULL) {
-        free(next);
+        heap_caps_free(next);
         return;
     }
 
-    free(*target);
+    heap_caps_free(*target);
     *target = next;
 }
 
@@ -84,7 +85,7 @@ esp_err_t xiaozhi_handle_set_websocket(const char *url, const char *token)
 
     char *token_copy = safe_strdup(token);
     if (token_copy == NULL) {
-        free(url_copy);
+        heap_caps_free(url_copy);
         return ESP_ERR_NO_MEM;
     }
 
@@ -102,14 +103,14 @@ esp_err_t xiaozhi_handle_set_activation(const char *code, const char *message, c
 
     char *message_copy = safe_strdup(message);
     if (message != NULL && message_copy == NULL) {
-        free(code_copy);
+        heap_caps_free(code_copy);
         return ESP_ERR_NO_MEM;
     }
 
     char *challenge_copy = safe_strdup(challenge);
     if (challenge != NULL && challenge_copy == NULL) {
-        free(code_copy);
-        free(message_copy);
+        heap_caps_free(code_copy);
+        heap_caps_free(message_copy);
         return ESP_ERR_NO_MEM;
     }
 
