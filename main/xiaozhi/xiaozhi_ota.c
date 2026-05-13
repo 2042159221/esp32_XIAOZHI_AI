@@ -11,18 +11,33 @@
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_netif.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "lwip/netdb.h"
+#include "wifi_sta_service.h"
 #include "xiaozhi_device.h"
 #include "xiaozhi_handle.h"
 
 static const char *TAG = "xiaozhi_ota";
 
 #define XIAOZHI_HTTP_RESPONSE_MAX_LEN (32 * 1024)
+#define XIAOZHI_OTA_HOST_MAX_LEN 128
 
 typedef struct {
     char *data;
     size_t len;
     size_t cap;
 } xiaozhi_http_response_t;
+
+static esp_err_t wait_for_network_ready(uint32_t timeout_ms);
+static esp_err_t log_sta_network_snapshot(bool *dns_ready);
+static esp_err_t extract_hostname_from_url(const char *url, char *host, size_t host_size);
+static esp_err_t resolve_hostname_once(const char *host);
+static const char *gai_error_name(int error);
+static void delay_between_dns_retries(int attempt, int max_attempts);
+static int get_dns_retry_count(void);
+static int get_dns_retry_delay_ms(void);
 
 static void *xiaozhi_malloc_prefer_spiram(size_t size)
 {
@@ -46,6 +61,194 @@ static void response_buffer_free(xiaozhi_http_response_t *response)
     response->data = NULL;
     response->len = 0;
     response->cap = 0;
+}
+
+static esp_err_t wait_for_network_ready(uint32_t timeout_ms)
+{
+    esp_err_t err = wifi_sta_service_wait_connected(timeout_ms);
+    ESP_RETURN_ON_ERROR(err, TAG, "wifi is not ready for ota");
+
+    bool dns_ready = false;
+    err = log_sta_network_snapshot(&dns_ready);
+    ESP_RETURN_ON_ERROR(err, TAG, "network snapshot failed");
+    ESP_RETURN_ON_FALSE(dns_ready, ESP_ERR_INVALID_STATE, TAG, "DNS server is not configured");
+
+    return ESP_OK;
+}
+
+static esp_err_t log_sta_network_snapshot(bool *dns_ready)
+{
+    if (dns_ready != NULL) {
+        *dns_ready = false;
+    }
+
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    ESP_RETURN_ON_FALSE(netif != NULL, ESP_ERR_NOT_FOUND, TAG, "wifi sta netif not found");
+
+    esp_netif_ip_info_t ip_info = {0};
+    ESP_RETURN_ON_ERROR(esp_netif_get_ip_info(netif, &ip_info), TAG, "get sta ip info failed");
+    ESP_RETURN_ON_FALSE(ip_info.ip.addr != 0, ESP_ERR_INVALID_STATE, TAG, "sta ip is 0.0.0.0");
+
+    ESP_LOGI(TAG,
+             "network ready: ip=" IPSTR " netmask=" IPSTR " gw=" IPSTR,
+             IP2STR(&ip_info.ip),
+             IP2STR(&ip_info.netmask),
+             IP2STR(&ip_info.gw));
+
+    const esp_netif_dns_type_t dns_types[] = {
+        ESP_NETIF_DNS_MAIN,
+        ESP_NETIF_DNS_BACKUP,
+        ESP_NETIF_DNS_FALLBACK,
+    };
+    const char *dns_labels[] = {
+        "main",
+        "backup",
+        "fallback",
+    };
+
+    bool found_dns = false;
+    for (size_t i = 0; i < sizeof(dns_types) / sizeof(dns_types[0]); ++i) {
+        esp_netif_dns_info_t dns = {0};
+        esp_err_t err = esp_netif_get_dns_info(netif, dns_types[i], &dns);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "dns %s unavailable: %s", dns_labels[i], esp_err_to_name(err));
+            continue;
+        }
+
+        if (dns.ip.type == ESP_IPADDR_TYPE_V6) {
+            ESP_LOGI(TAG, "dns %s=" IPV6STR, dns_labels[i], IPV62STR(dns.ip.u_addr.ip6));
+            if (dns.ip.u_addr.ip6.addr[0] != 0 || dns.ip.u_addr.ip6.addr[1] != 0 ||
+                dns.ip.u_addr.ip6.addr[2] != 0 || dns.ip.u_addr.ip6.addr[3] != 0) {
+                found_dns = true;
+            }
+            continue;
+        }
+
+        ESP_LOGI(TAG, "dns %s=" IPSTR, dns_labels[i], IP2STR(&dns.ip.u_addr.ip4));
+        if (dns.ip.u_addr.ip4.addr != 0) {
+            found_dns = true;
+        }
+    }
+
+    if (dns_ready != NULL) {
+        *dns_ready = found_dns;
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t extract_hostname_from_url(const char *url, char *host, size_t host_size)
+{
+    ESP_RETURN_ON_FALSE(url != NULL && url[0] != '\0', ESP_ERR_INVALID_ARG, TAG, "url is empty");
+    ESP_RETURN_ON_FALSE(host != NULL && host_size > 0, ESP_ERR_INVALID_ARG, TAG, "host output is invalid");
+
+    const char *scheme = strstr(url, "://");
+    ESP_RETURN_ON_FALSE(scheme != NULL, ESP_ERR_INVALID_ARG, TAG, "ota url missing scheme: %s", url);
+
+    const char *host_start = scheme + 3;
+    ESP_RETURN_ON_FALSE(host_start[0] != '\0', ESP_ERR_INVALID_ARG, TAG, "ota url missing host: %s", url);
+
+    const char *host_end = host_start;
+    while (*host_end != '\0' && *host_end != '/' && *host_end != '?' && *host_end != '#') {
+        host_end++;
+    }
+
+    const char *port_sep = NULL;
+    if (*host_start == '[') {
+        const char *ipv6_end = strchr(host_start, ']');
+        ESP_RETURN_ON_FALSE(ipv6_end != NULL && ipv6_end < host_end, ESP_ERR_INVALID_ARG, TAG, "invalid IPv6 host in ota url");
+        host_start++;
+        port_sep = ipv6_end + 1 < host_end && ipv6_end[1] == ':' ? ipv6_end + 1 : NULL;
+        host_end = ipv6_end;
+    } else {
+        port_sep = memchr(host_start, ':', (size_t)(host_end - host_start));
+    }
+
+    if (port_sep != NULL) {
+        host_end = port_sep;
+    }
+
+    size_t host_len = (size_t)(host_end - host_start);
+    ESP_RETURN_ON_FALSE(host_len > 0 && host_len < host_size,
+                        ESP_ERR_INVALID_ARG,
+                        TAG,
+                        "ota url host is invalid or too long, len=%u",
+                        (unsigned int)host_len);
+
+    memcpy(host, host_start, host_len);
+    host[host_len] = '\0';
+    return ESP_OK;
+}
+
+static esp_err_t resolve_hostname_once(const char *host)
+{
+    struct addrinfo hints = {
+        .ai_family = AF_INET,
+        .ai_socktype = SOCK_STREAM,
+    };
+    struct addrinfo *addrinfo = NULL;
+    int gai_err = getaddrinfo(host, NULL, &hints, &addrinfo);
+    if (gai_err != 0 || addrinfo == NULL) {
+        ESP_LOGW(TAG, "DNS resolve failed: host=%s getaddrinfo=%d(%s) addrinfo=%p", host, gai_err, gai_error_name(gai_err), addrinfo);
+        if (addrinfo != NULL) {
+            freeaddrinfo(addrinfo);
+        }
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    const struct sockaddr_in *addr = (const struct sockaddr_in *)addrinfo->ai_addr;
+    if (addr != NULL) {
+        esp_ip4_addr_t ip = {
+            .addr = addr->sin_addr.s_addr,
+        };
+        ESP_LOGI(TAG, "DNS resolve OK: %s -> " IPSTR, host, IP2STR(&ip));
+    } else {
+        ESP_LOGI(TAG, "DNS resolve OK: %s", host);
+    }
+
+    freeaddrinfo(addrinfo);
+    return ESP_OK;
+}
+
+static const char *gai_error_name(int error)
+{
+    switch (error) {
+    case 0:
+        return "OK";
+    case EAI_NONAME:
+        return "EAI_NONAME";
+    case EAI_SERVICE:
+        return "EAI_SERVICE";
+    case EAI_FAIL:
+        return "EAI_FAIL";
+    case EAI_MEMORY:
+        return "EAI_MEMORY";
+    case EAI_FAMILY:
+        return "EAI_FAMILY";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void delay_between_dns_retries(int attempt, int max_attempts)
+{
+    if (attempt + 1 >= max_attempts) {
+        return;
+    }
+
+    int delay_ms = get_dns_retry_delay_ms();
+    ESP_LOGW(TAG, "retry OTA after DNS/connect failure in %d ms, attempt %d/%d", delay_ms, attempt + 2, max_attempts);
+    vTaskDelay(pdMS_TO_TICKS(delay_ms));
+}
+
+static int get_dns_retry_count(void)
+{
+    return CONFIG_XIAOZHI_OTA_DNS_RETRY_COUNT > 0 ? CONFIG_XIAOZHI_OTA_DNS_RETRY_COUNT : 1;
+}
+
+static int get_dns_retry_delay_ms(void)
+{
+    return CONFIG_XIAOZHI_OTA_DNS_RETRY_DELAY_MS > 0 ? CONFIG_XIAOZHI_OTA_DNS_RETRY_DELAY_MS : 1000;
 }
 
 static esp_err_t response_buffer_append(xiaozhi_http_response_t *response, const char *data, size_t data_len)
@@ -367,6 +570,7 @@ esp_err_t xiaozhi_ota_request(const xiaozhi_ota_config_t *config)
     int timeout_ms = config != NULL && config->timeout_ms > 0 ? config->timeout_ms : CONFIG_XIAOZHI_HTTP_TIMEOUT_MS;
 
     ESP_RETURN_ON_FALSE(ota_url != NULL && ota_url[0] != '\0', ESP_ERR_INVALID_ARG, TAG, "ota url is empty");
+    ESP_RETURN_ON_ERROR(wait_for_network_ready(CONFIG_XIAOZHI_OTA_NET_READY_TIMEOUT_MS), TAG, "network is not ready");
 
     esp_err_t err = xiaozhi_handle_init();
     ESP_RETURN_ON_ERROR(err, TAG, "init shared handle failed");
@@ -386,68 +590,102 @@ esp_err_t xiaozhi_ota_request(const xiaozhi_ota_config_t *config)
         return ESP_ERR_NO_MEM;
     }
 
-    xiaozhi_http_response_t response = {0};
-    esp_http_client_config_t http_config = {
-        .url = ota_url,
-        .method = HTTP_METHOD_POST,
-        .event_handler = http_event_handler,
-        .user_data = &response,
-        .timeout_ms = timeout_ms,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-    };
-
-    esp_http_client_handle_t client = esp_http_client_init(&http_config);
-    if (client == NULL) {
-        heap_caps_free(user_agent);
-        cJSON_free(request_body);
-        return ESP_ERR_NO_MEM;
-    }
-
-    ESP_LOGI(TAG, "request ota url=%s timeout=%dms", ota_url, timeout_ms);
-    ESP_LOGI(TAG, "Client-Id(UUID)=%s", uuid);
-    ESP_LOGI(TAG, "Device-Id(MAC)=%s", mac);
-
-    err = esp_http_client_set_header(client, "Content-Type", "application/json");
-    if (err == ESP_OK) {
-        err = esp_http_client_set_header(client, "User-Agent", user_agent);
-    }
-    if (err == ESP_OK) {
-        err = esp_http_client_set_header(client, "Device-Id", mac);
-    }
-    if (err == ESP_OK) {
-        err = esp_http_client_set_header(client, "Client-Id", uuid);
-    }
-    if (err == ESP_OK) {
-        err = esp_http_client_set_header(client, "Activation-Version", "1");
-    }
-    if (err == ESP_OK) {
-        err = esp_http_client_set_post_field(client, request_body, (int)strlen(request_body));
-    }
+    char ota_host[XIAOZHI_OTA_HOST_MAX_LEN] = {0};
+    err = extract_hostname_from_url(ota_url, ota_host, sizeof(ota_host));
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "configure http client failed: %s", esp_err_to_name(err));
-        goto cleanup;
+        ESP_LOGE(TAG, "parse ota host failed: %s", esp_err_to_name(err));
+        goto cleanup_common;
     }
 
-    err = esp_http_client_perform(client);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "HTTP POST request failed: %s", esp_err_to_name(err));
-        goto cleanup;
+    int max_attempts = get_dns_retry_count();
+    for (int attempt = 0; attempt < max_attempts; ++attempt) {
+        xiaozhi_http_response_t response = {0};
+        esp_http_client_config_t http_config = {
+            .url = ota_url,
+            .method = HTTP_METHOD_POST,
+            .event_handler = http_event_handler,
+            .user_data = &response,
+            .timeout_ms = timeout_ms,
+            .crt_bundle_attach = esp_crt_bundle_attach,
+        };
+
+        esp_http_client_handle_t client = esp_http_client_init(&http_config);
+        if (client == NULL) {
+            err = ESP_ERR_NO_MEM;
+            ESP_LOGE(TAG, "create http client failed");
+            break;
+        }
+
+        ESP_LOGI(TAG, "request ota url=%s timeout=%dms attempt=%d/%d", ota_url, timeout_ms, attempt + 1, max_attempts);
+        ESP_LOGI(TAG, "Client-Id(UUID)=%s", uuid);
+        ESP_LOGI(TAG, "Device-Id(MAC)=%s", mac);
+
+        esp_err_t resolve_err = resolve_hostname_once(ota_host);
+        if (resolve_err != ESP_OK) {
+            err = ESP_ERR_HTTP_CONNECT;
+            esp_http_client_cleanup(client);
+            response_buffer_free(&response);
+            delay_between_dns_retries(attempt, max_attempts);
+            continue;
+        }
+
+        err = esp_http_client_set_header(client, "Content-Type", "application/json");
+        if (err == ESP_OK) {
+            err = esp_http_client_set_header(client, "User-Agent", user_agent);
+        }
+        if (err == ESP_OK) {
+            err = esp_http_client_set_header(client, "Device-Id", mac);
+        }
+        if (err == ESP_OK) {
+            err = esp_http_client_set_header(client, "Client-Id", uuid);
+        }
+        if (err == ESP_OK) {
+            err = esp_http_client_set_header(client, "Activation-Version", "1");
+        }
+        if (err == ESP_OK) {
+            err = esp_http_client_set_post_field(client, request_body, (int)strlen(request_body));
+        }
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "configure http client failed: %s", esp_err_to_name(err));
+            esp_http_client_cleanup(client);
+            response_buffer_free(&response);
+            break;
+        }
+
+        err = esp_http_client_perform(client);
+        if (err != ESP_OK) {
+            if (err == ESP_ERR_HTTP_CONNECT) {
+                ESP_LOGW(TAG, "HTTP connect failed, maybe DNS/network is unstable: %s", esp_err_to_name(err));
+                esp_http_client_cleanup(client);
+                response_buffer_free(&response);
+                delay_between_dns_retries(attempt, max_attempts);
+                continue;
+            }
+
+            ESP_LOGE(TAG, "HTTP POST request failed: %s", esp_err_to_name(err));
+            esp_http_client_cleanup(client);
+            response_buffer_free(&response);
+            break;
+        }
+
+        int status_code = esp_http_client_get_status_code(client);
+        ESP_LOGI(TAG, "HTTP status=%d, response_len=%u", status_code, (unsigned int)response.len);
+        if (status_code != 200) {
+            ESP_LOGE(TAG, "OTA business error, status=%d", status_code);
+            err = ESP_FAIL;
+            esp_http_client_cleanup(client);
+            response_buffer_free(&response);
+            break;
+        }
+
+        err = parse_ota_response(response.data);
+        esp_http_client_cleanup(client);
+        response_buffer_free(&response);
+        break;
     }
 
-    int status_code = esp_http_client_get_status_code(client);
-    ESP_LOGI(TAG, "HTTP status=%d, response_len=%u", status_code, (unsigned int)response.len);
-    if (status_code != 200) {
-        ESP_LOGE(TAG, "OTA request rejected, status=%d", status_code);
-        err = ESP_FAIL;
-        goto cleanup;
-    }
-
-    err = parse_ota_response(response.data);
-
-cleanup:
-    esp_http_client_cleanup(client);
+cleanup_common:
     heap_caps_free(user_agent);
     cJSON_free(request_body);
-    response_buffer_free(&response);
     return err;
 }

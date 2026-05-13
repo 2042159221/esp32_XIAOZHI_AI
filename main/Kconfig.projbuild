@@ -94,6 +94,29 @@ menu "Xiaozhi Agent Stage1 Configuration"
         help
             Timeout for the stage1 OTA activation HTTP request.
 
+    config XIAOZHI_OTA_NET_READY_TIMEOUT_MS
+        int "Xiaozhi OTA network ready timeout (ms)"
+        default 15000
+        range 1000 60000
+        help
+            Maximum time to wait for a valid STA IPv4 address before the OTA
+            activation HTTP request starts.
+
+    config XIAOZHI_OTA_DNS_RETRY_COUNT
+        int "Xiaozhi OTA DNS/connect retry count"
+        default 3
+        range 1 10
+        help
+            Number of retries for DNS resolution or HTTP connect failures
+            before the stage1 OTA activation request gives up.
+
+    config XIAOZHI_OTA_DNS_RETRY_DELAY_MS
+        int "Xiaozhi OTA DNS/connect retry delay (ms)"
+        default 1000
+        range 100 10000
+        help
+            Delay between OTA DNS resolution or HTTP connect retries.
+
     config XIAOZHI_AUDIO_DIAG_ENABLE
         bool "Build audio diagnostics helpers"
         default n

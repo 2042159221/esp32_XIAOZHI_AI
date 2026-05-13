@@ -16,6 +16,7 @@ set(MAIN_SRCS
     "services/provisioning/provisioning_service.c"
     "services/provisioning/provisioning_qr_payload.c"
     "services/audio/audio_pcm_service.c"
+    "services/sr/xiaozhi_sr.c"
     "infrastructure/esp_provisioning/esp_prov_adapter.c"
     "infrastructure/esp_provisioning/esp_prov_strategy.c"
     "xiaozhi/xiaozhi_handle.c"
@@ -45,6 +46,7 @@ idf_component_register(
         "services/network"
         "services/provisioning"
         "services/audio"
+        "services/sr"
         "infrastructure/esp_provisioning"
         "xiaozhi"
     REQUIRES
@@ -64,7 +66,8 @@ idf_component_register(
         json
         mbedtls
     PRIV_REQUIRES
-        esp_timer)
+        esp_timer
+        esp_psram)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE
     -finput-charset=UTF-8

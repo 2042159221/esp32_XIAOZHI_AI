@@ -21,7 +21,8 @@ dependencies:
   espressif/esp_codec_dev: ^1.4.0
   espressif/esp_audio_codec: ^2.3.0
   espressif/esp_websocket_client: ^1.4.0
-  78/xiaozhi-fonts: "1.6.0"
+  78/xiaozhi-fonts: 1.6.0
   lvgl/lvgl:
     version: ^9
     public: true
+  espressif/esp-sr: ^2.4.4

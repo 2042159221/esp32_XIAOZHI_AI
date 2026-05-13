@@ -11,7 +11,7 @@
 #include "xiaozhi_handle.h"
 #include "xiaozhi_ota.h"
 #include "xiaozhi_ui.h"
-#include "xiaozhi_ws.h"
+#include "xiaozhi_sr.h"
 
 static const char *TAG = "xiaozhi_stage1";
 
@@ -63,9 +63,9 @@ static esp_err_t enter_ai_after_activation(void)
 {
     xiaozhi_ui_show_welcome();
 
-    esp_err_t err = xiaozhi_ws_start();
+    esp_err_t err = xiaozhi_sr_init(NULL);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "start xiaozhi websocket failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "start xiaozhi sr failed: %s", esp_err_to_name(err));
         xiaozhi_ui_show_error(UI_TEXT_CONNECT_FAILED, UI_TEXT_AI_START_FAILED);
         return err;
     }

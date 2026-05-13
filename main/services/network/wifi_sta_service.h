@@ -24,6 +24,7 @@ esp_err_t wifi_sta_service_init(void);
 esp_err_t wifi_sta_service_connect_saved(void);
 esp_err_t wifi_sta_service_connect_default(void);
 esp_err_t wifi_sta_service_connect(const wifi_sta_service_config_t *config);
+esp_err_t wifi_sta_service_wait_connected(uint32_t timeout_ms);
 esp_err_t wifi_sta_service_disconnect(void);
 bool wifi_sta_service_is_connected(void);
 

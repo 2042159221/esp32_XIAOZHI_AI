@@ -30,6 +30,8 @@ static bool s_wifi_connected;
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static esp_err_t copy_wifi_field(uint8_t *dest, size_t dest_size, const char *src, const char *field_name);
+static void log_dns_server(esp_netif_t *netif, esp_netif_dns_type_t type, const char *label);
+static void log_network_info(esp_netif_t *netif, const esp_netif_ip_info_t *ip_info);
 
 #ifndef CONFIG_ESP_WIFI_SSID
 #define CONFIG_ESP_WIFI_SSID ""
@@ -202,6 +204,29 @@ esp_err_t wifi_sta_service_connect(const wifi_sta_service_config_t *config)
     return ESP_OK;
 }
 
+esp_err_t wifi_sta_service_wait_connected(uint32_t timeout_ms)
+{
+    ESP_RETURN_ON_FALSE(s_wifi_initialized, ESP_ERR_INVALID_STATE, TAG, "wifi is not initialized");
+    ESP_RETURN_ON_FALSE(s_wifi_event_group != NULL, ESP_ERR_INVALID_STATE, TAG, "wifi event group is not initialized");
+
+    if (s_wifi_connected) {
+        return ESP_OK;
+    }
+
+    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
+                                           WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                           pdFALSE,
+                                           pdFALSE,
+                                           pdMS_TO_TICKS(timeout_ms));
+    ESP_RETURN_ON_FALSE((bits & WIFI_CONNECTED_BIT) != 0,
+                        (bits & WIFI_FAIL_BIT) != 0 ? ESP_FAIL : ESP_ERR_TIMEOUT,
+                        TAG,
+                        "wait wifi connected timeout, timeout=%u ms",
+                        (unsigned int)timeout_ms);
+
+    return ESP_OK;
+}
+
 esp_err_t wifi_sta_service_disconnect(void)
 {
     ESP_RETURN_ON_FALSE(s_wifi_initialized, ESP_ERR_INVALID_STATE, TAG, "wifi is not initialized");
@@ -258,7 +283,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         s_wifi_connected = true;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         ESP_LOGI(TAG, "========== WIFI STA CONNECTED ==========");
-        ESP_LOGI(TAG, "got ip: " IPSTR, IP2STR(&event->ip_info.ip));
+        log_network_info(event->esp_netif != NULL ? event->esp_netif : s_wifi_sta_netif, &event->ip_info);
     }
 }
 
@@ -271,4 +296,41 @@ static esp_err_t copy_wifi_field(uint8_t *dest, size_t dest_size, const char *sr
     dest[src_len] = '\0';
 
     return ESP_OK;
+}
+
+static void log_network_info(esp_netif_t *netif, const esp_netif_ip_info_t *ip_info)
+{
+    if (ip_info != NULL) {
+        ESP_LOGI(TAG,
+                 "got ip: " IPSTR ", netmask: " IPSTR ", gw: " IPSTR,
+                 IP2STR(&ip_info->ip),
+                 IP2STR(&ip_info->netmask),
+                 IP2STR(&ip_info->gw));
+    }
+
+    if (netif == NULL) {
+        ESP_LOGW(TAG, "wifi sta netif is null, cannot print DNS");
+        return;
+    }
+
+    log_dns_server(netif, ESP_NETIF_DNS_MAIN, "main");
+    log_dns_server(netif, ESP_NETIF_DNS_BACKUP, "backup");
+    log_dns_server(netif, ESP_NETIF_DNS_FALLBACK, "fallback");
+}
+
+static void log_dns_server(esp_netif_t *netif, esp_netif_dns_type_t type, const char *label)
+{
+    esp_netif_dns_info_t dns = {0};
+    esp_err_t err = esp_netif_get_dns_info(netif, type, &dns);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "dns %s unavailable: %s", label, esp_err_to_name(err));
+        return;
+    }
+
+    if (dns.ip.type == ESP_IPADDR_TYPE_V6) {
+        ESP_LOGI(TAG, "dns %s: " IPV6STR, label, IPV62STR(dns.ip.u_addr.ip6));
+        return;
+    }
+
+    ESP_LOGI(TAG, "dns %s: " IPSTR, label, IP2STR(&dns.ip.u_addr.ip4));
 }
