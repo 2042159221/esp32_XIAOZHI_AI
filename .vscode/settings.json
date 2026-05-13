@@ -68,7 +68,6 @@
   "idf.monitorEnableTimestamps": true,
   "terminal.explorerKind": "integrated",
   "terminal.integrated.accessibleViewFocusOnCommandExecution": true,
-  "terminal.integrated.defaultProfile.windows": "ESP-IDF Project CMD",
   "terminal.integrated.profiles.windows": {
     "ESP-IDF Project CMD": {
       "path": "C:\\Windows\\System32\\cmd.exe",
