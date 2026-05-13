@@ -7,6 +7,7 @@
 #include "driver/i2s_std.h"
 #include "esp_check.h"
 #include "esp_codec_dev_defaults.h"
+#include "esp_log.h"
 
 static const char *TAG = "bsp_audio";
 
@@ -16,6 +17,28 @@ static i2s_chan_handle_t s_i2s_rx_chan;
 static const audio_codec_data_if_t *s_i2s_data_if;
 static esp_codec_dev_handle_t s_codec;
 static bool s_codec_opened;
+
+static esp_err_t probe_es8311_addr(uint8_t *addr)
+{
+    ESP_RETURN_ON_FALSE(addr != NULL, ESP_ERR_INVALID_ARG, TAG, "ES8311 address output is NULL");
+
+    ESP_LOGI(TAG, "Start ES8311 I2C probe on SDA=%d SCL=%d", BOARD_AUDIO_I2C_SDA, BOARD_AUDIO_I2C_SCL);
+
+    const uint8_t candidates[] = {0x18, 0x19};
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+        esp_err_t err = i2c_master_probe(s_i2c_bus, candidates[i], 100);
+        if (err == ESP_OK) {
+            *addr = candidates[i];
+            ESP_LOGI(TAG, "ES8311 probe result: case %c, 7-bit address 0x%02X, codec address 0x%02X",
+                     *addr == 0x18 ? 'A' : 'B', *addr, (uint8_t)(*addr << 1));
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG, "ES8311 not detected at I2C address 0x%02X: %s", candidates[i], esp_err_to_name(err));
+    }
+
+    ESP_LOGE(TAG, "ES8311 not detected at 0x18 or 0x19; check CCLK/CDATA, CE level, power, and reset state");
+    return ESP_ERR_NOT_FOUND;
+}
 
 static esp_err_t init_i2c(void)
 {
@@ -105,9 +128,12 @@ esp_err_t bsp_audio_init(void)
     const audio_codec_gpio_if_t *gpio_if = audio_codec_new_gpio();
     ESP_RETURN_ON_FALSE(gpio_if != NULL, ESP_ERR_NO_MEM, TAG, "create codec GPIO interface failed");
 
+    uint8_t es8311_addr = BOARD_AUDIO_ES8311_ADDR;
+    ESP_RETURN_ON_ERROR(probe_es8311_addr(&es8311_addr), TAG, "probe ES8311 I2C address failed");
+
     audio_codec_i2c_cfg_t i2c_cfg = {
         .port = BOARD_AUDIO_I2C_PORT,
-        .addr = BOARD_AUDIO_ES8311_ADDR,
+        .addr = (uint8_t)(es8311_addr << 1),
         .bus_handle = s_i2c_bus,
     };
     const audio_codec_ctrl_if_t *i2c_ctrl_if = audio_codec_new_i2c_ctrl(&i2c_cfg);

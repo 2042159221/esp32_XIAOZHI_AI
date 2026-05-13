@@ -11,6 +11,43 @@
 			],
 			"isBackground": false,
 			"group": "build"
+		},
+		{
+			"label": "idf flash monitor",
+			"type": "shell",
+			"command": "cmd",
+			"args": [
+				"/c",
+				"call E:\\Espressif\\frameworks\\esp-idf-v5.3.1\\export.bat && idf.py -p COM15 flash monitor"
+			],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "list serial ports",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"Get-CimInstance Win32_SerialPort | Select-Object DeviceID,Name,Description | Format-Table -AutoSize"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "idf flash monitor COM16",
+			"type": "shell",
+			"command": "cmd",
+			"args": [
+				"/c",
+				"call E:\\Espressif\\frameworks\\esp-idf-v5.3.1\\export.bat && idf.py -p COM16 flash monitor"
+			],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
 		}
 	]
 }
