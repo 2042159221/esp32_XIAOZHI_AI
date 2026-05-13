@@ -70,6 +70,9 @@ idf.py -C test_apps/audio_board_test menuconfig
 
 - `Audio Board Test -> Run WebSocket PCM echo test`
 - `Audio Board Test -> WebSocket echo server URI`
+- `Audio Board Test -> Audio diagnostics local loopback duration (ms)`
+- `Audio Board Test -> Audio diagnostics local loopback digital gain`
+- `Audio Board Test -> Audio diagnostics output volume`
 - `Xiaozhi WiFi STA Configuration -> WiFi STA SSID`
 - `Xiaozhi WiFi STA Configuration -> WiFi STA Password`
 
@@ -148,11 +151,14 @@ ws://192.168.1.23:8765
 预期串口日志关键字：
 
 - `start local mic-to-speaker loopback`
+- `loopback window=... in_min=... in_max=... in_rms=... out_min=... out_max=... out_rms=... clipped=...`
 - `local loopback finished`
 
 通过标准：
 
 - 能听到自身说话被设备实时放出
+- 说话时 `in_rms` 明显高于安静时，且 `out_rms` 随 `digital_gain` 放大
+- `clipped` 偶发少量可接受；若持续大量增长，说明增益过大，应降低 `local loopback digital gain`
 - 无明显持续阻塞
 - 若出现啸叫，属于声学环境问题，不直接判定软件失败，但应缩短距离或降低音量复测
 

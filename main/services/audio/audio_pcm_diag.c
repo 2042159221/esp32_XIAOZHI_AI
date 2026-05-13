@@ -35,6 +35,14 @@ static const char *TAG = "audio_diag";
 #define CONFIG_XIAOZHI_AUDIO_DIAG_VOLUME 65
 #endif
 
+#ifndef CONFIG_XIAOZHI_AUDIO_DIAG_LOOPBACK_GAIN
+#define CONFIG_XIAOZHI_AUDIO_DIAG_LOOPBACK_GAIN 1
+#endif
+
+#ifndef CONFIG_XIAOZHI_AUDIO_DIAG_LOOPBACK_LOG_MS
+#define CONFIG_XIAOZHI_AUDIO_DIAG_LOOPBACK_LOG_MS 500
+#endif
+
 #ifndef CONFIG_XIAOZHI_AUDIO_DIAG_TONE_AMPLITUDE
 #define CONFIG_XIAOZHI_AUDIO_DIAG_TONE_AMPLITUDE 12000
 #endif
@@ -99,6 +107,17 @@ static void fill_1khz_frame(int16_t *frame, size_t sample_count, uint32_t sample
     for (size_t i = 0; i < sample_count; ++i) {
         frame[i] = s_1khz_lut[(sample_index_base + i) % AUDIO_DIAG_1KHZ_PERIOD_SAMPLES];
     }
+}
+
+static int16_t clamp_i16(int32_t value)
+{
+    if (value > INT16_MAX) {
+        return INT16_MAX;
+    }
+    if (value < INT16_MIN) {
+        return INT16_MIN;
+    }
+    return (int16_t)value;
 }
 
 esp_err_t audio_diag_i2c_scan(void)
@@ -238,7 +257,26 @@ esp_err_t audio_diag_loopback(void)
         total_frames = 1;
     }
 
-    ESP_LOGW(TAG, "start local mic-to-speaker loopback for %u ms", (unsigned int)CONFIG_XIAOZHI_AUDIO_DIAG_LOOPBACK_MS);
+    uint32_t log_window_frames = (CONFIG_XIAOZHI_AUDIO_DIAG_LOOPBACK_LOG_MS + AUDIO_DIAG_FRAME_MS - 1) / AUDIO_DIAG_FRAME_MS;
+    if (log_window_frames == 0) {
+        log_window_frames = 1;
+    }
+
+    uint64_t in_sum_squares = 0;
+    uint64_t out_sum_squares = 0;
+    int16_t in_min = INT16_MAX;
+    int16_t in_max = INT16_MIN;
+    int16_t out_min = INT16_MAX;
+    int16_t out_max = INT16_MIN;
+    size_t log_samples = 0;
+    uint32_t clipped_samples = 0;
+    uint32_t log_elapsed_ms = 0;
+
+    ESP_LOGW(TAG,
+             "start local mic-to-speaker loopback for %u ms, volume=%u, digital_gain=%u",
+             (unsigned int)CONFIG_XIAOZHI_AUDIO_DIAG_LOOPBACK_MS,
+             (unsigned int)CONFIG_XIAOZHI_AUDIO_DIAG_VOLUME,
+             (unsigned int)CONFIG_XIAOZHI_AUDIO_DIAG_LOOPBACK_GAIN);
     int mute_ret = esp_codec_dev_set_out_mute(bsp_audio_get_codec(), false);
     if (mute_ret != ESP_CODEC_DEV_OK) {
         ESP_LOGW(TAG, "unmute output before loopback failed: %d", mute_ret);
@@ -251,13 +289,70 @@ esp_err_t audio_diag_loopback(void)
             return ESP_FAIL;
         }
 
+        for (size_t i = 0; i < AUDIO_DIAG_SAMPLES_PER_FRAME; ++i) {
+            int16_t in_sample = frame[i];
+            if (in_sample < in_min) {
+                in_min = in_sample;
+            }
+            if (in_sample > in_max) {
+                in_max = in_sample;
+            }
+            int32_t signed_in_sample = in_sample;
+            in_sum_squares += (uint64_t)(signed_in_sample * signed_in_sample);
+
+            int32_t amplified = signed_in_sample * CONFIG_XIAOZHI_AUDIO_DIAG_LOOPBACK_GAIN;
+            int16_t out_sample = clamp_i16(amplified);
+            if (out_sample != amplified) {
+                clipped_samples++;
+            }
+            frame[i] = out_sample;
+
+            if (out_sample < out_min) {
+                out_min = out_sample;
+            }
+            if (out_sample > out_max) {
+                out_max = out_sample;
+            }
+            int32_t signed_out_sample = out_sample;
+            out_sum_squares += (uint64_t)(signed_out_sample * signed_out_sample);
+        }
+        log_samples += AUDIO_DIAG_SAMPLES_PER_FRAME;
+
         ret = esp_codec_dev_write(bsp_audio_get_codec(), frame, AUDIO_DIAG_BYTES_PER_FRAME);
         if (ret != ESP_CODEC_DEV_OK) {
             ESP_LOGW(TAG, "loopback playback failed on frame %u: %d", (unsigned int)frame_index, ret);
             return ESP_FAIL;
         }
+
+        if (((frame_index + 1) % log_window_frames) == 0 || frame_index + 1 == total_frames) {
+            uint32_t in_rms = log_samples > 0 ? integer_sqrt_u64(in_sum_squares / log_samples) : 0;
+            uint32_t out_rms = log_samples > 0 ? integer_sqrt_u64(out_sum_squares / log_samples) : 0;
+            log_elapsed_ms += log_window_frames * AUDIO_DIAG_FRAME_MS;
+            ESP_LOGI(TAG,
+                     "loopback window=%u ms samples=%u in_min=%d in_max=%d in_rms=%u out_min=%d out_max=%d out_rms=%u clipped=%u",
+                     (unsigned int)log_elapsed_ms,
+                     (unsigned int)log_samples,
+                     in_min,
+                     in_max,
+                     (unsigned int)in_rms,
+                     out_min,
+                     out_max,
+                     (unsigned int)out_rms,
+                     (unsigned int)clipped_samples);
+
+            in_sum_squares = 0;
+            out_sum_squares = 0;
+            in_min = INT16_MAX;
+            in_max = INT16_MIN;
+            out_min = INT16_MAX;
+            out_max = INT16_MIN;
+            log_samples = 0;
+            clipped_samples = 0;
+        }
     }
 
+    memset(frame, 0, sizeof(frame));
+    (void)esp_codec_dev_write(bsp_audio_get_codec(), frame, AUDIO_DIAG_BYTES_PER_FRAME);
     mute_ret = esp_codec_dev_set_out_mute(bsp_audio_get_codec(), true);
     if (mute_ret != ESP_CODEC_DEV_OK) {
         ESP_LOGW(TAG, "mute output after loopback failed: %d", mute_ret);

@@ -135,6 +135,23 @@ menu "Xiaozhi Agent Stage1 Configuration"
             Duration used by audio_diag_loopback(). Keep short to reduce
             feedback/howling risk during bench tests.
 
+    config XIAOZHI_AUDIO_DIAG_LOOPBACK_GAIN
+        int "Audio diagnostics local loopback digital gain"
+        depends on XIAOZHI_AUDIO_DIAG_ENABLE
+        default 1
+        range 1 16
+        help
+            Integer digital gain applied only inside audio_diag_loopback().
+            Increase this when raw microphone PCM is too quiet to hear.
+
+    config XIAOZHI_AUDIO_DIAG_LOOPBACK_LOG_MS
+        int "Audio diagnostics local loopback log window (ms)"
+        depends on XIAOZHI_AUDIO_DIAG_ENABLE
+        default 500
+        range 20 10000
+        help
+            Log interval for loopback min/max/RMS diagnostics.
+
     config XIAOZHI_AUDIO_DIAG_VOLUME
         int "Audio diagnostics output volume"
         depends on XIAOZHI_AUDIO_DIAG_ENABLE
