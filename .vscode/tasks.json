@@ -7,7 +7,7 @@
 			"command": "cmd",
 			"args": [
 				"/c",
-				"call E:\\Espressif\\frameworks\\esp-idf-v5.3.1\\export.bat && idf.py build"
+				"call E:\\Espressif\\frameworks\\esp-idf-v5.3.1\\export.bat && set IDF_CCACHE_ENABLE=1 && idf.py build -j 8"
 			],
 			"isBackground": false,
 			"group": "build"
@@ -18,7 +18,7 @@
 			"command": "cmd",
 			"args": [
 				"/c",
-				"call E:\\Espressif\\frameworks\\esp-idf-v5.3.1\\export.bat && idf.py -p COM15 flash monitor"
+				"call E:\\Espressif\\frameworks\\esp-idf-v5.3.1\\export.bat && idf.py -p COM16 flash monitor"
 			],
 			"isBackground": true,
 			"problemMatcher": [],
@@ -34,18 +34,6 @@
 				"Get-CimInstance Win32_SerialPort | Select-Object DeviceID,Name,Description | Format-Table -AutoSize"
 			],
 			"isBackground": false,
-			"problemMatcher": [],
-			"group": "build"
-		},
-		{
-			"label": "idf flash monitor COM16",
-			"type": "shell",
-			"command": "cmd",
-			"args": [
-				"/c",
-				"call E:\\Espressif\\frameworks\\esp-idf-v5.3.1\\export.bat && idf.py -p COM16 flash monitor"
-			],
-			"isBackground": true,
 			"problemMatcher": [],
 			"group": "build"
 		}
