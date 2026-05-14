@@ -12,6 +12,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lwip/netdb.h"
@@ -23,6 +24,8 @@ static const char *TAG = "xiaozhi_ota";
 
 #define XIAOZHI_HTTP_RESPONSE_MAX_LEN (32 * 1024)
 #define XIAOZHI_OTA_HOST_MAX_LEN 128
+#define XIAOZHI_OTA_HTTP_RX_BUFFER_SIZE 512
+#define XIAOZHI_OTA_HTTP_TX_BUFFER_SIZE 512
 
 typedef struct {
     char *data;
@@ -38,6 +41,7 @@ static const char *gai_error_name(int error);
 static void delay_between_dns_retries(int attempt, int max_attempts);
 static int get_dns_retry_count(void);
 static int get_dns_retry_delay_ms(void);
+static void log_ota_heap_state(int attempt, int max_attempts, const char *stage);
 
 static void *xiaozhi_malloc_prefer_spiram(size_t size)
 {
@@ -249,6 +253,22 @@ static int get_dns_retry_count(void)
 static int get_dns_retry_delay_ms(void)
 {
     return CONFIG_XIAOZHI_OTA_DNS_RETRY_DELAY_MS > 0 ? CONFIG_XIAOZHI_OTA_DNS_RETRY_DELAY_MS : 1000;
+}
+
+static void log_ota_heap_state(int attempt, int max_attempts, const char *stage)
+{
+    size_t internal_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    size_t internal_largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+    ESP_LOGI(TAG,
+             "OTA heap attempt=%d/%d stage=%s free heap=%lu minimum free heap=%lu internal free=%u internal largest free block=%u",
+             attempt + 1,
+             max_attempts,
+             stage,
+             (unsigned long)esp_get_free_heap_size(),
+             (unsigned long)esp_get_minimum_free_heap_size(),
+             (unsigned int)internal_free,
+             (unsigned int)internal_largest);
 }
 
 static esp_err_t response_buffer_append(xiaozhi_http_response_t *response, const char *data, size_t data_len)
@@ -600,6 +620,10 @@ esp_err_t xiaozhi_ota_request(const xiaozhi_ota_config_t *config)
     int max_attempts = get_dns_retry_count();
     for (int attempt = 0; attempt < max_attempts; ++attempt) {
         xiaozhi_http_response_t response = {0};
+        esp_http_client_handle_t client = NULL;
+        bool retry_attempt = false;
+
+        log_ota_heap_state(attempt, max_attempts, "before http init");
         esp_http_client_config_t http_config = {
             .url = ota_url,
             .method = HTTP_METHOD_POST,
@@ -607,26 +631,33 @@ esp_err_t xiaozhi_ota_request(const xiaozhi_ota_config_t *config)
             .user_data = &response,
             .timeout_ms = timeout_ms,
             .crt_bundle_attach = esp_crt_bundle_attach,
+            .buffer_size = XIAOZHI_OTA_HTTP_RX_BUFFER_SIZE,
+            .buffer_size_tx = XIAOZHI_OTA_HTTP_TX_BUFFER_SIZE,
+            .keep_alive_enable = false,
         };
 
-        esp_http_client_handle_t client = esp_http_client_init(&http_config);
+        client = esp_http_client_init(&http_config);
         if (client == NULL) {
             err = ESP_ERR_NO_MEM;
             ESP_LOGE(TAG, "create http client failed");
+            log_ota_heap_state(attempt, max_attempts, "after http init failed");
             break;
         }
+        log_ota_heap_state(attempt, max_attempts, "after http init");
 
         ESP_LOGI(TAG, "request ota url=%s timeout=%dms attempt=%d/%d", ota_url, timeout_ms, attempt + 1, max_attempts);
+        ESP_LOGI(TAG,
+                 "http client buffers: rx=%d tx=%d",
+                 XIAOZHI_OTA_HTTP_RX_BUFFER_SIZE,
+                 XIAOZHI_OTA_HTTP_TX_BUFFER_SIZE);
         ESP_LOGI(TAG, "Client-Id(UUID)=%s", uuid);
         ESP_LOGI(TAG, "Device-Id(MAC)=%s", mac);
 
         esp_err_t resolve_err = resolve_hostname_once(ota_host);
         if (resolve_err != ESP_OK) {
             err = ESP_ERR_HTTP_CONNECT;
-            esp_http_client_cleanup(client);
-            response_buffer_free(&response);
-            delay_between_dns_retries(attempt, max_attempts);
-            continue;
+            retry_attempt = true;
+            goto attempt_cleanup;
         }
 
         err = esp_http_client_set_header(client, "Content-Type", "application/json");
@@ -647,40 +678,45 @@ esp_err_t xiaozhi_ota_request(const xiaozhi_ota_config_t *config)
         }
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "configure http client failed: %s", esp_err_to_name(err));
-            esp_http_client_cleanup(client);
-            response_buffer_free(&response);
-            break;
+            goto attempt_cleanup;
         }
 
+        log_ota_heap_state(attempt, max_attempts, "before http perform");
         err = esp_http_client_perform(client);
         if (err != ESP_OK) {
+            log_ota_heap_state(attempt, max_attempts, "after http perform failed");
             if (err == ESP_ERR_HTTP_CONNECT) {
-                ESP_LOGW(TAG, "HTTP connect failed, maybe DNS/network is unstable: %s", esp_err_to_name(err));
-                esp_http_client_cleanup(client);
-                response_buffer_free(&response);
-                delay_between_dns_retries(attempt, max_attempts);
-                continue;
+                ESP_LOGW(TAG, "HTTP connect failed after DNS resolved, check TLS/internal heap: %s", esp_err_to_name(err));
+                retry_attempt = true;
+                goto attempt_cleanup;
             }
 
             ESP_LOGE(TAG, "HTTP POST request failed: %s", esp_err_to_name(err));
-            esp_http_client_cleanup(client);
-            response_buffer_free(&response);
-            break;
+            goto attempt_cleanup;
         }
+        log_ota_heap_state(attempt, max_attempts, "after http perform ok");
 
         int status_code = esp_http_client_get_status_code(client);
         ESP_LOGI(TAG, "HTTP status=%d, response_len=%u", status_code, (unsigned int)response.len);
         if (status_code != 200) {
             ESP_LOGE(TAG, "OTA business error, status=%d", status_code);
             err = ESP_FAIL;
-            esp_http_client_cleanup(client);
-            response_buffer_free(&response);
-            break;
+            goto attempt_cleanup;
         }
 
         err = parse_ota_response(response.data);
-        esp_http_client_cleanup(client);
+
+attempt_cleanup:
+        if (client != NULL) {
+            esp_http_client_cleanup(client);
+            client = NULL;
+        }
         response_buffer_free(&response);
+        log_ota_heap_state(attempt, max_attempts, "after cleanup");
+        if (retry_attempt) {
+            delay_between_dns_retries(attempt, max_attempts);
+            continue;
+        }
         break;
     }
 
