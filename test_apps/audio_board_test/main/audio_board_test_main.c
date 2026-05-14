@@ -47,6 +47,10 @@ static const char *TAG = "audio_board_test";
 #define CONFIG_AUDIO_BOARD_TEST_RUN_WS_ECHO 0
 #endif
 
+#ifndef CONFIG_AUDIO_BOARD_TEST_TASK_STACK_SIZE
+#define CONFIG_AUDIO_BOARD_TEST_TASK_STACK_SIZE 12288
+#endif
+
 #ifndef CONFIG_AUDIO_BOARD_TEST_WS_URI
 #define CONFIG_AUDIO_BOARD_TEST_WS_URI ""
 #endif
@@ -64,6 +68,8 @@ enum {
     WS_STOPPED_BIT = BIT1,
     WS_ERROR_BIT = BIT2,
 };
+
+#define AUDIO_BOARD_TEST_TASK_PRIORITY 5
 
 #if CONFIG_AUDIO_BOARD_TEST_RUN_WS_ECHO
 typedef struct {
@@ -302,6 +308,21 @@ static esp_err_t run_audio_board_test(void)
     return ESP_OK;
 }
 
+static void audio_board_test_task(void *arg)
+{
+    (void)arg;
+
+    ESP_LOGI(TAG, "audio board test task start stack_size=%d", CONFIG_AUDIO_BOARD_TEST_TASK_STACK_SIZE);
+    esp_err_t err = run_audio_board_test();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "audio board test failed: %s", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "audio board test completed successfully");
+    }
+    ESP_LOGI(TAG, "audio board test task stack high watermark=%u", (unsigned int)uxTaskGetStackHighWaterMark(NULL));
+    vTaskDelete(NULL);
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "audio board test app boot");
@@ -321,11 +342,14 @@ void app_main(void)
         return;
     }
 
-    err = run_audio_board_test();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "audio board test failed: %s", esp_err_to_name(err));
+    BaseType_t created = xTaskCreate(audio_board_test_task,
+                                     "audio_board_test",
+                                     CONFIG_AUDIO_BOARD_TEST_TASK_STACK_SIZE,
+                                     NULL,
+                                     AUDIO_BOARD_TEST_TASK_PRIORITY,
+                                     NULL);
+    if (created != pdPASS) {
+        ESP_LOGE(TAG, "create audio board test task failed");
         return;
     }
-
-    ESP_LOGI(TAG, "audio board test completed successfully");
 }

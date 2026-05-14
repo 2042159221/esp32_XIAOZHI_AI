@@ -99,15 +99,19 @@ esp_err_t audio_opus_codec_open(audio_opus_codec_t *codec)
 
     codec->pcm_frame_bytes = (size_t)enc_in_size;
     codec->opus_frame_bytes = (size_t)enc_out_size;
+    if (codec->opus_frame_bytes < AUDIO_OPUS_ENCODED_FRAME_CAPACITY_BYTES) {
+        codec->opus_frame_bytes = AUDIO_OPUS_ENCODED_FRAME_CAPACITY_BYTES;
+    }
     codec->decoded_frame_bytes = AUDIO_OPUS_PCM_FRAME_BYTES;
 
     ESP_LOGI(TAG,
-             "opus codec ready sample_rate=%d channels=%d bits=%d frame_duration_ms=%d pcm_frame_bytes=%u opus_frame_capacity=%u bitrate=%d complexity=%d",
+             "opus codec ready sample_rate=%d channels=%d bits=%d frame_duration_ms=%d pcm_frame_bytes=%u opus_frame_recommended=%d opus_frame_capacity=%u bitrate=%d complexity=%d",
              AUDIO_OPUS_SAMPLE_RATE,
              AUDIO_OPUS_CHANNELS,
              AUDIO_OPUS_BITS_PER_SAMPLE,
              AUDIO_OPUS_FRAME_DURATION_MS,
              (unsigned int)codec->pcm_frame_bytes,
+             enc_out_size,
              (unsigned int)codec->opus_frame_bytes,
              CONFIG_XIAOZHI_AUDIO_OPUS_DIAG_BITRATE,
              CONFIG_XIAOZHI_AUDIO_OPUS_DIAG_COMPLEXITY);

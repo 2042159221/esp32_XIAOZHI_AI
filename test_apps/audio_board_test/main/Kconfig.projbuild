@@ -37,6 +37,15 @@ menu "Audio Board Test"
             Reads local mic PCM, buffers chunks into 60 ms Opus frames, encodes
             and decodes locally, then plays the decoded PCM through speaker.
 
+    config AUDIO_BOARD_TEST_TASK_STACK_SIZE
+        int "Audio board test task stack size"
+        default 12288
+        range 4096 32768
+        help
+            Stack size in bytes for running audio board diagnostics. Opus
+            encode/decode and codec driver calls need more stack than the
+            default ESP-IDF main task.
+
     config AUDIO_BOARD_TEST_RUN_WS_ECHO
         bool "Run WebSocket PCM echo test"
         default n
