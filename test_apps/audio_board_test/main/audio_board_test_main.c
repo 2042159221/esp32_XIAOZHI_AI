@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "audio_opus_diag.h"
 #include "audio_pcm_diag.h"
 #include "audio_pcm_service.h"
 #include "esp_check.h"
@@ -32,6 +33,14 @@ static const char *TAG = "audio_board_test";
 
 #ifndef CONFIG_AUDIO_BOARD_TEST_RUN_LOCAL_LOOPBACK
 #define CONFIG_AUDIO_BOARD_TEST_RUN_LOCAL_LOOPBACK 0
+#endif
+
+#ifndef CONFIG_AUDIO_BOARD_TEST_RUN_OPUS_1KHZ_LOOPBACK
+#define CONFIG_AUDIO_BOARD_TEST_RUN_OPUS_1KHZ_LOOPBACK 0
+#endif
+
+#ifndef CONFIG_AUDIO_BOARD_TEST_RUN_OPUS_MIC_LOOPBACK
+#define CONFIG_AUDIO_BOARD_TEST_RUN_OPUS_MIC_LOOPBACK 0
 #endif
 
 #ifndef CONFIG_AUDIO_BOARD_TEST_RUN_WS_ECHO
@@ -278,6 +287,14 @@ static esp_err_t run_audio_board_test(void)
     ESP_RETURN_ON_ERROR(audio_diag_loopback(), TAG, "local loopback test failed");
 #endif
 
+#if CONFIG_AUDIO_BOARD_TEST_RUN_OPUS_1KHZ_LOOPBACK
+    ESP_RETURN_ON_ERROR(audio_opus_diag_play_1khz_loopback(), TAG, "Opus 1 kHz loopback test failed");
+#endif
+
+#if CONFIG_AUDIO_BOARD_TEST_RUN_OPUS_MIC_LOOPBACK
+    ESP_RETURN_ON_ERROR(audio_opus_diag_mic_loopback(), TAG, "Opus mic loopback test failed");
+#endif
+
 #if CONFIG_AUDIO_BOARD_TEST_RUN_WS_ECHO
     ESP_RETURN_ON_ERROR(run_ws_echo_test(), TAG, "WS echo test failed");
 #endif
@@ -289,11 +306,13 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "audio board test app boot");
     ESP_LOGI(TAG,
-             "config: i2c_scan=%d tone=%d mic_rms=%d local_loopback=%d ws_echo=%d",
+             "config: i2c_scan=%d tone=%d mic_rms=%d local_loopback=%d opus_1khz=%d opus_mic=%d ws_echo=%d",
              CONFIG_AUDIO_BOARD_TEST_RUN_I2C_SCAN,
              CONFIG_AUDIO_BOARD_TEST_RUN_1KHZ_TONE,
              CONFIG_AUDIO_BOARD_TEST_RUN_MIC_RMS,
              CONFIG_AUDIO_BOARD_TEST_RUN_LOCAL_LOOPBACK,
+             CONFIG_AUDIO_BOARD_TEST_RUN_OPUS_1KHZ_LOOPBACK,
+             CONFIG_AUDIO_BOARD_TEST_RUN_OPUS_MIC_LOOPBACK,
              CONFIG_AUDIO_BOARD_TEST_RUN_WS_ECHO);
 
     esp_err_t err = esp_platform_init();

@@ -191,6 +191,81 @@ menu "Xiaozhi Agent Stage1 Configuration"
         help
             16-bit PCM amplitude used for the 1 kHz test tone.
 
+    config XIAOZHI_AUDIO_OPUS_DIAG_ENABLE
+        bool "Build local Opus encode/decode diagnostics"
+        default n
+        select AUDIO_ENCODER_OPUS_SUPPORT
+        select AUDIO_DECODER_OPUS_SUPPORT
+        help
+            Build local PCM -> Opus -> PCM diagnostics. This does not connect
+            to WebSocket or the Xiaozhi backend and does not run automatically.
+
+    config XIAOZHI_AUDIO_OPUS_DIAG_TONE_LOOPBACK_MS
+        int "Opus diagnostics 1 kHz loopback duration (ms)"
+        depends on XIAOZHI_AUDIO_OPUS_DIAG_ENABLE
+        default 5000
+        range 60 60000
+        help
+            Duration used by audio_opus_diag_play_1khz_loopback().
+
+    config XIAOZHI_AUDIO_OPUS_DIAG_MIC_LOOPBACK_MS
+        int "Opus diagnostics mic loopback duration (ms)"
+        depends on XIAOZHI_AUDIO_OPUS_DIAG_ENABLE
+        default 10000
+        range 60 300000
+        help
+            Duration used by audio_opus_diag_mic_loopback().
+
+    config XIAOZHI_AUDIO_OPUS_DIAG_MIC_INPUT_BYTES
+        int "Opus diagnostics mic input chunk bytes"
+        depends on XIAOZHI_AUDIO_OPUS_DIAG_ENABLE
+        default 1024
+        range 320 1920
+        help
+            PCM chunk size read from the mic before buffering into 60 ms Opus
+            frames. Use 1024 to match the observed SR fetch output size.
+
+    config XIAOZHI_AUDIO_OPUS_DIAG_LOG_WINDOW_MS
+        int "Opus diagnostics log window (ms)"
+        depends on XIAOZHI_AUDIO_OPUS_DIAG_ENABLE
+        default 500
+        range 60 10000
+        help
+            Log interval for Opus loopback frame statistics.
+
+    config XIAOZHI_AUDIO_OPUS_DIAG_VOLUME
+        int "Opus diagnostics output volume"
+        depends on XIAOZHI_AUDIO_OPUS_DIAG_ENABLE
+        default 65
+        range 0 100
+        help
+            Output volume set before Opus diagnostic playback.
+
+    config XIAOZHI_AUDIO_OPUS_DIAG_TONE_AMPLITUDE
+        int "Opus diagnostics 1 kHz tone amplitude"
+        depends on XIAOZHI_AUDIO_OPUS_DIAG_ENABLE
+        default 10000
+        range 1000 30000
+        help
+            16-bit PCM amplitude used for the Opus 1 kHz test tone.
+
+    config XIAOZHI_AUDIO_OPUS_DIAG_BITRATE
+        int "Opus diagnostics bitrate"
+        depends on XIAOZHI_AUDIO_OPUS_DIAG_ENABLE
+        default 32000
+        range 20000 256000
+        help
+            Constant Opus bitrate in bits per second.
+
+    config XIAOZHI_AUDIO_OPUS_DIAG_COMPLEXITY
+        int "Opus diagnostics encoder complexity"
+        depends on XIAOZHI_AUDIO_OPUS_DIAG_ENABLE
+        default 0
+        range 0 10
+        help
+            Opus encoder complexity. Keep low during board bring-up to reduce
+            CPU load.
+
 endmenu
 
 menu "Xiaozhi Provisioning Configuration"

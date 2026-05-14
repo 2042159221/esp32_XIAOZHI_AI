@@ -28,6 +28,12 @@ if(CONFIG_XIAOZHI_AUDIO_DIAG_ENABLE)
     list(APPEND MAIN_SRCS "services/audio/audio_pcm_diag.c")
 endif()
 
+if(CONFIG_XIAOZHI_AUDIO_OPUS_DIAG_ENABLE)
+    list(APPEND MAIN_SRCS
+        "services/audio/audio_opus_codec.c"
+        "services/audio/audio_opus_diag.c")
+endif()
+
 idf_component_register(
     SRCS
         ${MAIN_SRCS}
@@ -63,6 +69,7 @@ idf_component_register(
         esp_http_client
         esp_websocket_client
         esp_codec_dev
+        esp_audio_codec
         json
         mbedtls
     PRIV_REQUIRES

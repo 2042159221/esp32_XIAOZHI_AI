@@ -8,6 +8,8 @@ idf_component_register(
         "${PROJECT_ROOT}/main/bsp/audio/bsp_audio.c"
         "${PROJECT_ROOT}/main/services/audio/audio_pcm_service.c"
         "${PROJECT_ROOT}/main/services/audio/audio_pcm_diag.c"
+        "${PROJECT_ROOT}/main/services/audio/audio_opus_codec.c"
+        "${PROJECT_ROOT}/main/services/audio/audio_opus_diag.c"
     INCLUDE_DIRS
         "."
         "${PROJECT_ROOT}/main/board"
@@ -23,6 +25,7 @@ idf_component_register(
         driver
         esp_websocket_client
         esp_codec_dev
+        esp_audio_codec
     PRIV_REQUIRES
         esp_timer)
 
