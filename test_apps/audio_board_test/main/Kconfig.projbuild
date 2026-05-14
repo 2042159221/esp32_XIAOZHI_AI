@@ -39,8 +39,8 @@ menu "Audio Board Test"
 
     config AUDIO_BOARD_TEST_TASK_STACK_SIZE
         int "Audio board test task stack size"
-        default 20480
-        range 4096 32768
+        default 49152
+        range 4096 65536
         help
             Stack size in bytes for running audio board diagnostics. Opus
             encode/decode and codec driver calls need more stack than the
