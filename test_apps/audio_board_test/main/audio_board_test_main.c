@@ -10,10 +10,12 @@
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_platform_init.h"
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 #include "wifi_sta_service.h"
 
@@ -320,7 +322,11 @@ static void audio_board_test_task(void *arg)
         ESP_LOGI(TAG, "audio board test completed successfully");
     }
     ESP_LOGI(TAG, "audio board test task stack high watermark=%u", (unsigned int)uxTaskGetStackHighWaterMark(NULL));
+#if CONFIG_SPIRAM
+    vTaskDeleteWithCaps(NULL);
+#else
     vTaskDelete(NULL);
+#endif
 }
 
 void app_main(void)
@@ -342,12 +348,24 @@ void app_main(void)
         return;
     }
 
+#if CONFIG_SPIRAM
+    ESP_LOGI(TAG, "create audio board test task with PSRAM stack");
+    BaseType_t created = xTaskCreatePinnedToCoreWithCaps(audio_board_test_task,
+                                                         "audio_board_test",
+                                                         CONFIG_AUDIO_BOARD_TEST_TASK_STACK_SIZE,
+                                                         NULL,
+                                                         AUDIO_BOARD_TEST_TASK_PRIORITY,
+                                                         NULL,
+                                                         tskNO_AFFINITY,
+                                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
     BaseType_t created = xTaskCreate(audio_board_test_task,
                                      "audio_board_test",
                                      CONFIG_AUDIO_BOARD_TEST_TASK_STACK_SIZE,
                                      NULL,
                                      AUDIO_BOARD_TEST_TASK_PRIORITY,
                                      NULL);
+#endif
     if (created != pdPASS) {
         ESP_LOGE(TAG, "create audio board test task failed");
         return;

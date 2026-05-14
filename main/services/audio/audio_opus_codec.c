@@ -3,20 +3,47 @@
 #include <string.h>
 
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_audio_types.h"
 #include "esp_opus_dec.h"
 #include "esp_opus_enc.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "audio_opus_codec";
 
 #ifndef CONFIG_XIAOZHI_AUDIO_OPUS_DIAG_BITRATE
-#define CONFIG_XIAOZHI_AUDIO_OPUS_DIAG_BITRATE 32000
+#define CONFIG_XIAOZHI_AUDIO_OPUS_DIAG_BITRATE 90000
 #endif
 
 #ifndef CONFIG_XIAOZHI_AUDIO_OPUS_DIAG_COMPLEXITY
 #define CONFIG_XIAOZHI_AUDIO_OPUS_DIAG_COMPLEXITY 0
 #endif
+
+static esp_opus_enc_frame_duration_t get_encoder_frame_duration(void)
+{
+#if AUDIO_OPUS_FRAME_DURATION_MS == 20
+    return ESP_OPUS_ENC_FRAME_DURATION_20_MS;
+#else
+    return ESP_OPUS_ENC_FRAME_DURATION_60_MS;
+#endif
+}
+
+static esp_opus_dec_frame_duration_t get_decoder_frame_duration(void)
+{
+#if AUDIO_OPUS_FRAME_DURATION_MS == 20
+    return ESP_OPUS_DEC_FRAME_DURATION_20_MS;
+#else
+    return ESP_OPUS_DEC_FRAME_DURATION_60_MS;
+#endif
+}
+
+static bool should_log_codec_call(uint32_t call_index)
+{
+    return call_index <= 3 || (call_index % 16) == 0;
+}
 
 static esp_err_t audio_err_to_esp(esp_audio_err_t err)
 {
@@ -50,8 +77,8 @@ esp_err_t audio_opus_codec_open(audio_opus_codec_t *codec)
     enc_cfg.channel = AUDIO_OPUS_CHANNELS;
     enc_cfg.bits_per_sample = AUDIO_OPUS_BITS_PER_SAMPLE;
     enc_cfg.bitrate = CONFIG_XIAOZHI_AUDIO_OPUS_DIAG_BITRATE;
-    enc_cfg.frame_duration = ESP_OPUS_ENC_FRAME_DURATION_60_MS;
-    enc_cfg.application_mode = ESP_OPUS_ENC_APPLICATION_VOIP;
+    enc_cfg.frame_duration = get_encoder_frame_duration();
+    enc_cfg.application_mode = ESP_OPUS_ENC_APPLICATION_AUDIO;
     enc_cfg.complexity = CONFIG_XIAOZHI_AUDIO_OPUS_DIAG_COMPLEXITY;
     enc_cfg.enable_fec = false;
     enc_cfg.enable_dtx = false;
@@ -86,7 +113,7 @@ esp_err_t audio_opus_codec_open(audio_opus_codec_t *codec)
     esp_opus_dec_cfg_t dec_cfg = ESP_OPUS_DEC_CONFIG_DEFAULT();
     dec_cfg.sample_rate = AUDIO_OPUS_SAMPLE_RATE;
     dec_cfg.channel = AUDIO_OPUS_CHANNELS;
-    dec_cfg.frame_duration = ESP_OPUS_DEC_FRAME_DURATION_60_MS;
+    dec_cfg.frame_duration = get_decoder_frame_duration();
     dec_cfg.self_delimited = false;
 
     audio_ret = esp_opus_dec_open(&dec_cfg, sizeof(dec_cfg), &codec->decoder);
@@ -115,6 +142,12 @@ esp_err_t audio_opus_codec_open(audio_opus_codec_t *codec)
              (unsigned int)codec->opus_frame_bytes,
              CONFIG_XIAOZHI_AUDIO_OPUS_DIAG_BITRATE,
              CONFIG_XIAOZHI_AUDIO_OPUS_DIAG_COMPLEXITY);
+    ESP_LOGI(TAG,
+             "opus codec runtime application=AUDIO free heap=%u internal free=%u minimum free heap=%u task stack watermark=%u",
+             (unsigned int)esp_get_free_heap_size(),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)esp_get_minimum_free_heap_size(),
+             (unsigned int)uxTaskGetStackHighWaterMark(NULL));
 
     return ESP_OK;
 }
@@ -158,6 +191,21 @@ esp_err_t audio_opus_codec_encode(audio_opus_codec_t *codec,
         .len = (uint32_t)opus_capacity,
     };
 
+    codec->encode_calls++;
+    const uint32_t call_index = codec->encode_calls;
+    if (should_log_codec_call(call_index)) {
+        ESP_LOGI(TAG,
+                 "before opus encode call=%u pcm input bytes=%u opus capacity bytes=%u encoder=%p free heap=%u internal free=%u minimum free heap=%u task stack watermark=%u",
+                 (unsigned int)call_index,
+                 (unsigned int)pcm_len,
+                 (unsigned int)opus_capacity,
+                 codec->encoder,
+                 (unsigned int)esp_get_free_heap_size(),
+                 (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned int)esp_get_minimum_free_heap_size(),
+                 (unsigned int)uxTaskGetStackHighWaterMark(NULL));
+    }
+
     esp_audio_err_t audio_ret = esp_opus_enc_process(codec->encoder, &in_frame, &out_frame);
     if (audio_ret != ESP_AUDIO_ERR_OK) {
         ESP_LOGE(TAG, "opus encode failed: %d", audio_ret);
@@ -165,6 +213,18 @@ esp_err_t audio_opus_codec_encode(audio_opus_codec_t *codec,
     }
 
     ESP_RETURN_ON_FALSE(out_frame.encoded_bytes > 0, ESP_FAIL, TAG, "opus encoder produced empty frame");
+    ESP_RETURN_ON_FALSE(out_frame.encoded_bytes <= opus_capacity, ESP_FAIL, TAG, "opus encoder overflow encoded=%u capacity=%u",
+                        (unsigned int)out_frame.encoded_bytes,
+                        (unsigned int)opus_capacity);
+    if (should_log_codec_call(call_index)) {
+        ESP_LOGI(TAG,
+                 "after opus encode call=%u opus encoded bytes=%u free heap=%u internal free=%u task stack watermark=%u",
+                 (unsigned int)call_index,
+                 (unsigned int)out_frame.encoded_bytes,
+                 (unsigned int)esp_get_free_heap_size(),
+                 (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned int)uxTaskGetStackHighWaterMark(NULL));
+    }
     *opus_len = out_frame.encoded_bytes;
     return ESP_OK;
 }
@@ -191,6 +251,20 @@ esp_err_t audio_opus_codec_decode(audio_opus_codec_t *codec,
     };
     esp_audio_dec_info_t info = {0};
 
+    codec->decode_calls++;
+    const uint32_t call_index = codec->decode_calls;
+    if (should_log_codec_call(call_index)) {
+        ESP_LOGI(TAG,
+                 "before opus decode call=%u opus input bytes=%u pcm capacity bytes=%u decoder=%p free heap=%u internal free=%u task stack watermark=%u",
+                 (unsigned int)call_index,
+                 (unsigned int)opus_len,
+                 (unsigned int)pcm_capacity,
+                 codec->decoder,
+                 (unsigned int)esp_get_free_heap_size(),
+                 (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned int)uxTaskGetStackHighWaterMark(NULL));
+    }
+
     esp_audio_err_t audio_ret = esp_opus_dec_decode(codec->decoder, &raw, &out_frame, &info);
     if (audio_ret != ESP_AUDIO_ERR_OK) {
         ESP_LOGE(TAG, "opus decode failed: %d needed_size=%u consumed=%u",
@@ -207,6 +281,16 @@ esp_err_t audio_opus_codec_decode(audio_opus_codec_t *codec,
                         (unsigned int)out_frame.decoded_size,
                         (unsigned int)codec->decoded_frame_bytes);
 
+    if (should_log_codec_call(call_index)) {
+        ESP_LOGI(TAG,
+                 "after opus decode call=%u decoded pcm bytes=%u consumed bytes=%u free heap=%u internal free=%u task stack watermark=%u",
+                 (unsigned int)call_index,
+                 (unsigned int)out_frame.decoded_size,
+                 (unsigned int)raw.consumed,
+                 (unsigned int)esp_get_free_heap_size(),
+                 (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned int)uxTaskGetStackHighWaterMark(NULL));
+    }
     *pcm_len = out_frame.decoded_size;
     return ESP_OK;
 }

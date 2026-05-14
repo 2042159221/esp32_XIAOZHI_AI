@@ -39,7 +39,7 @@ menu "Audio Board Test"
 
     config AUDIO_BOARD_TEST_TASK_STACK_SIZE
         int "Audio board test task stack size"
-        default 12288
+        default 20480
         range 4096 32768
         help
             Stack size in bytes for running audio board diagnostics. Opus
@@ -109,6 +109,26 @@ menu "Audio Board Test"
         default 12000
         range 1000 30000
 
+    choice XIAOZHI_AUDIO_OPUS_DIAG_FRAME_DURATION
+        prompt "Opus diagnostics frame duration"
+        default XIAOZHI_AUDIO_OPUS_DIAG_FRAME_DURATION_60_MS
+        help
+            Use 60 ms for the target 1920-byte PCM loopback test. Use 20 ms
+            only as an A/B probe if the vendor Opus encoder crashes before
+            producing the first frame.
+
+        config XIAOZHI_AUDIO_OPUS_DIAG_FRAME_DURATION_20_MS
+            bool "20 ms (640-byte PCM probe)"
+
+        config XIAOZHI_AUDIO_OPUS_DIAG_FRAME_DURATION_60_MS
+            bool "60 ms (1920-byte PCM target)"
+    endchoice
+
+    config XIAOZHI_AUDIO_OPUS_DIAG_FRAME_DURATION_MS
+        int
+        default 20 if XIAOZHI_AUDIO_OPUS_DIAG_FRAME_DURATION_20_MS
+        default 60 if XIAOZHI_AUDIO_OPUS_DIAG_FRAME_DURATION_60_MS
+
     config XIAOZHI_AUDIO_OPUS_DIAG_TONE_LOOPBACK_MS
         int "Opus diagnostics 1 kHz loopback duration (ms)"
         default 5000
@@ -141,7 +161,7 @@ menu "Audio Board Test"
 
     config XIAOZHI_AUDIO_OPUS_DIAG_BITRATE
         int "Opus diagnostics bitrate"
-        default 32000
+        default 90000
         range 20000 256000
 
     config XIAOZHI_AUDIO_OPUS_DIAG_COMPLEXITY
