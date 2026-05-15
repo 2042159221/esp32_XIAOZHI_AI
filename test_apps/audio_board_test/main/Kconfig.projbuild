@@ -169,6 +169,36 @@ menu "Audio Board Test"
         default 0
         range 0 10
 
+    config XIAOZHI_AUDIO_OPUS_DIAG_SOURCE_TASK_STACK_SIZE
+        int "Opus diagnostics source task stack size"
+        default 6144
+        range 4096 32768
+
+    config XIAOZHI_AUDIO_OPUS_DIAG_ENCODER_TASK_STACK_SIZE
+        int "Opus diagnostics encoder task stack size"
+        default 49152
+        range 16384 65536
+
+    config XIAOZHI_AUDIO_OPUS_DIAG_BRIDGE_TASK_STACK_SIZE
+        int "Opus diagnostics bridge task stack size"
+        default 4096
+        range 3072 16384
+
+    config XIAOZHI_AUDIO_OPUS_DIAG_DECODER_TASK_STACK_SIZE
+        int "Opus diagnostics decoder task stack size"
+        default 24576
+        range 8192 32768
+
+    config XIAOZHI_AUDIO_OPUS_DIAG_PCM_RING_BYTES
+        int "Opus diagnostics PCM ringbuffer bytes"
+        default 32768
+        range 4096 131072
+
+    config XIAOZHI_AUDIO_OPUS_DIAG_OPUS_RING_BYTES
+        int "Opus diagnostics Opus ringbuffer bytes"
+        default 32768
+        range 8192 131072
+
 endmenu
 
 menu "Xiaozhi WiFi STA Configuration"
