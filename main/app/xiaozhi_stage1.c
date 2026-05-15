@@ -1,4 +1,6 @@
-#include "xiaozhi_stage1.h"
+#include "xiaozhi_stage1.h"
+#include "audio_opus_stream.h"
+#include "xiaozhi_ws.h"
 
 #include <stdbool.h>
 #include <string.h>
@@ -17,7 +19,9 @@ static const char *TAG = "xiaozhi_stage1";
 
 #define XIAOZHI_STAGE1_OTA_TASK_STACK 8192
 #define XIAOZHI_STAGE1_OTA_TASK_PRIORITY 5
-#define XIAOZHI_STAGE1_ACTIVATION_POLL_MS 3000
+#define XIAOZHI_STAGE1_ACTIVATION_POLL_MS 3000
+#define XIAOZHI_STAGE1_WS_READY_TIMEOUT_MS 15000
+#define XIAOZHI_STAGE1_WS_READY_POLL_MS 100
 #define UI_TEXT_CONNECT_FAILED "连接失败"
 #define UI_TEXT_INIT_FAILED "设备初始化失败"
 #define UI_TEXT_CHECK_NETWORK "请检查网络或服务器"
@@ -28,7 +32,13 @@ static TaskHandle_t s_ota_task_handle;
 static bool s_ota_task_starting;
 static portMUX_TYPE s_ota_task_lock = portMUX_INITIALIZER_UNLOCKED;
 
-static void log_token_len(void);
+static void log_token_len(void);
+static esp_err_t wait_for_websocket_ready(void);
+#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+static void sr_wake_cb(void *user_ctx);
+static void sr_vad_state_cb(vad_state_t state, void *user_ctx);
+static void sr_pcm_output_cb(const uint8_t *data, size_t len, void *user_ctx);
+#endif
 
 static void log_activation_snapshot(void)
 {
@@ -63,23 +73,113 @@ static esp_err_t enter_ai_after_activation(void)
 {
     xiaozhi_ui_show_welcome();
 
-    esp_err_t err = xiaozhi_sr_init(NULL);
+    esp_err_t err = xiaozhi_ws_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "start websocket failed: %s", esp_err_to_name(err));
+        xiaozhi_ui_show_error(UI_TEXT_CONNECT_FAILED, UI_TEXT_AI_START_FAILED);
+        return err;
+    }
+
+    ESP_LOGI(TAG, "waiting for websocket READY before SR gate");
+    err = wait_for_websocket_ready();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "websocket ready wait failed: %s", esp_err_to_name(err));
+        (void)xiaozhi_ws_stop();
+        xiaozhi_ui_show_error(UI_TEXT_CONNECT_FAILED, UI_TEXT_AI_START_FAILED);
+        return err;
+    }
+
+#if !CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+    ESP_LOGI(TAG, "websocket READY; SR auto init disabled");
+    return ESP_OK;
+}
+#else
+    const xiaozhi_sr_callbacks_t sr_callbacks = {
+        .vad_state_cb = sr_vad_state_cb,
+        .wake_cb = sr_wake_cb,
+        .pcm_output_cb = sr_pcm_output_cb,
+        .user_ctx = NULL,
+    };
+
+    err = xiaozhi_sr_init(&sr_callbacks);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "start xiaozhi sr failed: %s", esp_err_to_name(err));
-        xiaozhi_ui_show_error(UI_TEXT_CONNECT_FAILED, UI_TEXT_AI_START_FAILED);
+        xiaozhi_ui_show_error(UI_TEXT_CONNECT_FAILED, UI_TEXT_AI_START_FAILED);
         return err;
     }
 
     return ESP_OK;
 }
 
-static void log_token_len(void)
-{
+#endif
+
+static void log_token_len(void)
+{
     const char *token = xiaozhi_handle_get_websocket_token();
     ESP_LOGI(TAG, "websocket token length=%u", token != NULL ? (unsigned int)strlen(token) : 0U);
 }
 
-static void log_device_snapshot(void)
+static esp_err_t wait_for_websocket_ready(void)
+{
+    const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(XIAOZHI_STAGE1_WS_READY_TIMEOUT_MS);
+
+    while (xTaskGetTickCount() < deadline) {
+        if (xiaozhi_ws_is_ready()) {
+            return ESP_OK;
+        }
+
+        xiaozhi_ws_state_t state = xiaozhi_ws_get_state();
+        if (state == XIAOZHI_WS_STATE_ERROR || state == XIAOZHI_WS_STATE_DISCONNECTED) {
+            ESP_LOGE(TAG, "websocket failed before READY state=%d", state);
+            return ESP_FAIL;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(XIAOZHI_STAGE1_WS_READY_POLL_MS));
+    }
+
+    ESP_LOGE(TAG, "websocket READY wait timeout after %d ms", XIAOZHI_STAGE1_WS_READY_TIMEOUT_MS);
+    return ESP_ERR_TIMEOUT;
+}
+
+#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+static void sr_wake_cb(void *user_ctx)
+{
+    (void)user_ctx;
+    ESP_LOGI(TAG, "wake detected");
+    esp_err_t err = xiaozhi_ws_trigger_listen(XIAOZHI_WS_LISTEN_MODE_WAKE);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "wake listen start ignored: %s", esp_err_to_name(err));
+    }
+}
+
+static void sr_vad_state_cb(vad_state_t state, void *user_ctx)
+{
+    (void)user_ctx;
+    if (state == VAD_SPEECH) {
+        ESP_LOGI(TAG, "VAD speech");
+        return;
+    }
+
+    ESP_LOGI(TAG, "VAD silence");
+    if (xiaozhi_ws_get_state() == XIAOZHI_WS_STATE_LISTENING) {
+        esp_err_t err = xiaozhi_ws_stop_listen();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "listen stop on VAD silence failed: %s", esp_err_to_name(err));
+        }
+    }
+}
+
+static void sr_pcm_output_cb(const uint8_t *data, size_t len, void *user_ctx)
+{
+    (void)user_ctx;
+    esp_err_t err = audio_opus_stream_feed_pcm(data, len);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE && err != ESP_ERR_TIMEOUT) {
+        ESP_LOGW(TAG, "feed opus uplink pcm failed: %s", esp_err_to_name(err));
+    }
+}
+#endif
+
+static void log_device_snapshot(void)
 {
     char uuid[XIAOZHI_UUID_STR_LEN] = {0};
     char mac[XIAOZHI_MAC_STR_LEN] = {0};

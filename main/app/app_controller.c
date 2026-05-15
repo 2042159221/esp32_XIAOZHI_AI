@@ -8,6 +8,7 @@
 #include "status_led_service.h"
 #include "xiaozhi_stage1.h"
 #include "xiaozhi_ui.h"
+#include "xiaozhi_ws.h"
 
 static const char *TAG = "app_controller";
 
@@ -30,11 +31,13 @@ static void business_start_cb(void *user_ctx);
 static void provisioning_state_cb(provisioning_service_state_t state, void *user_ctx);
 static void provisioning_qrcode_cb(const char *payload, void *user_ctx);
 static esp_err_t reset_provisioning_cb(void *user_ctx);
+static esp_err_t voice_trigger_cb(void *user_ctx);
 
 esp_err_t app_controller_start(void)
 {
     const app_input_controller_config_t input_config = {
         .reset_provisioning_cb = reset_provisioning_cb,
+        .voice_trigger_cb = voice_trigger_cb,
         .user_ctx = NULL,
     };
     ESP_RETURN_ON_ERROR(app_input_controller_init(&input_config), TAG, "init input controller failed");
@@ -114,4 +117,11 @@ static esp_err_t reset_provisioning_cb(void *user_ctx)
 {
     (void)user_ctx;
     return provisioning_service_reset_and_restart();
+}
+
+static esp_err_t voice_trigger_cb(void *user_ctx)
+{
+    (void)user_ctx;
+    ESP_LOGI(TAG, "button voice trigger");
+    return xiaozhi_ws_trigger_listen(XIAOZHI_WS_LISTEN_MODE_BUTTON);
 }

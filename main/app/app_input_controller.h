@@ -7,9 +7,11 @@ extern "C" {
 #endif
 
 typedef esp_err_t (*app_input_reset_provisioning_cb_t)(void *user_ctx);
+typedef esp_err_t (*app_input_voice_trigger_cb_t)(void *user_ctx);
 
 typedef struct {
     app_input_reset_provisioning_cb_t reset_provisioning_cb;
+    app_input_voice_trigger_cb_t voice_trigger_cb;
     void *user_ctx;
 } app_input_controller_config_t;
 
