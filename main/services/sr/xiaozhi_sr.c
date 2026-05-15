@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include "esp_psram.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 
 static const char *TAG = "xiaozhi_sr";
@@ -45,6 +46,61 @@ static char *s_vad_model_name;
 
 static void sr_feed_task(void *arg);
 static void sr_detect_task(void *arg);
+
+static void log_sr_heap_state(const char *stage)
+{
+    ESP_LOGI(TAG,
+             "%s heap free=%u min_free=%u internal_free=%u internal_largest=%u spiram_free=%u spiram_largest=%u task_stack_watermark=%u",
+             stage,
+             (unsigned int)esp_get_free_heap_size(),
+             (unsigned int)esp_get_minimum_free_heap_size(),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+             (unsigned int)uxTaskGetStackHighWaterMark(NULL));
+}
+
+static BaseType_t create_sr_task(TaskFunction_t task_fn,
+                                 const char *name,
+                                 uint32_t stack_size,
+                                 UBaseType_t priority,
+                                 TaskHandle_t *handle)
+{
+#if CONFIG_SPIRAM
+    return xTaskCreatePinnedToCoreWithCaps(task_fn,
+                                           name,
+                                           stack_size,
+                                           NULL,
+                                           priority,
+                                           handle,
+                                           tskNO_AFFINITY,
+                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    return xTaskCreate(task_fn, name, stack_size, NULL, priority, handle);
+#endif
+}
+
+static void delete_current_sr_task(void)
+{
+#if CONFIG_SPIRAM
+    vTaskDeleteWithCaps(NULL);
+#else
+    vTaskDelete(NULL);
+#endif
+}
+
+static void delete_sr_task(TaskHandle_t task)
+{
+    if (task == NULL) {
+        return;
+    }
+#if CONFIG_SPIRAM
+    vTaskDeleteWithCaps(task);
+#else
+    vTaskDelete(task);
+#endif
+}
 
 static void reset_state(void)
 {
@@ -106,6 +162,13 @@ static void notify_wake(void)
 {
     if (s_callbacks.wake_cb != NULL) {
         s_callbacks.wake_cb(s_callbacks.user_ctx);
+    }
+}
+
+static void notify_pcm_output(const uint8_t *data, size_t len)
+{
+    if (s_callbacks.pcm_output_cb != NULL) {
+        s_callbacks.pcm_output_cb(data, len, s_callbacks.user_ctx);
     }
 }
 
@@ -200,7 +263,7 @@ static void sr_feed_task(void *arg)
     }
 
     s_feed_task = NULL;
-    vTaskDelete(NULL);
+    delete_current_sr_task();
 }
 
 static void sr_detect_task(void *arg)
@@ -211,6 +274,10 @@ static void sr_detect_task(void *arg)
         afe_fetch_result_t *result = s_afe_handle->fetch_with_delay(s_afe_data, pdMS_TO_TICKS(XIAOZHI_SR_FETCH_TIMEOUT_MS));
         if (result == NULL) {
             continue;
+        }
+
+        if (result->data != NULL && result->data_size > 0) {
+            notify_pcm_output((const uint8_t *)result->data, (size_t)result->data_size * sizeof(int16_t));
         }
 
         if (result->wakeup_state == WAKENET_DETECTED) {
@@ -231,7 +298,7 @@ static void sr_detect_task(void *arg)
     }
 
     s_detect_task = NULL;
-    vTaskDelete(NULL);
+    delete_current_sr_task();
 }
 
 esp_err_t xiaozhi_sr_init(const xiaozhi_sr_callbacks_t *callbacks)
@@ -268,26 +335,33 @@ esp_err_t xiaozhi_sr_init(const xiaozhi_sr_callbacks_t *callbacks)
 
     s_running = true;
 
-    BaseType_t created = xTaskCreate(sr_feed_task, "sr_feed", XIAOZHI_SR_TASK_STACK_FEED, NULL, XIAOZHI_SR_TASK_PRIORITY_FEED, &s_feed_task);
+    log_sr_heap_state("before create sr_feed task");
+    BaseType_t created = create_sr_task(sr_feed_task, "sr_feed", XIAOZHI_SR_TASK_STACK_FEED, XIAOZHI_SR_TASK_PRIORITY_FEED, &s_feed_task);
     if (created != pdPASS) {
+        ESP_LOGE(TAG, "create sr_feed task failed: %d", created);
+        log_sr_heap_state("after create sr_feed task failed");
         s_running = false;
         cleanup_resources();
         return ESP_ERR_NO_MEM;
     }
+    log_sr_heap_state("after create sr_feed task");
 
-    created = xTaskCreate(sr_detect_task, "sr_detect", XIAOZHI_SR_TASK_STACK_DETECT, NULL, XIAOZHI_SR_TASK_PRIORITY_DETECT, &s_detect_task);
+    created = create_sr_task(sr_detect_task, "sr_detect", XIAOZHI_SR_TASK_STACK_DETECT, XIAOZHI_SR_TASK_PRIORITY_DETECT, &s_detect_task);
     if (created != pdPASS) {
+        ESP_LOGE(TAG, "create sr_detect task failed: %d", created);
+        log_sr_heap_state("after create sr_detect task failed");
         s_running = false;
         for (int i = 0; i < 10 && s_feed_task != NULL; ++i) {
             vTaskDelay(pdMS_TO_TICKS(20));
         }
         if (s_feed_task != NULL) {
-            vTaskDelete(s_feed_task);
+            delete_sr_task(s_feed_task);
             s_feed_task = NULL;
         }
         cleanup_resources();
         return ESP_ERR_NO_MEM;
     }
+    log_sr_heap_state("after create sr_detect task");
 
     return ESP_OK;
 }
@@ -301,11 +375,11 @@ esp_err_t xiaozhi_sr_stop(void)
     }
 
     if (s_feed_task != NULL) {
-        vTaskDelete(s_feed_task);
+        delete_sr_task(s_feed_task);
         s_feed_task = NULL;
     }
     if (s_detect_task != NULL) {
-        vTaskDelete(s_detect_task);
+        delete_sr_task(s_detect_task);
         s_detect_task = NULL;
     }
 

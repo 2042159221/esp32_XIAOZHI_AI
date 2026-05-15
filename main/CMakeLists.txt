@@ -16,12 +16,15 @@ set(MAIN_SRCS
     "services/provisioning/provisioning_service.c"
     "services/provisioning/provisioning_qr_payload.c"
     "services/audio/audio_pcm_service.c"
+    "services/audio/audio_opus_codec.c"
+    "services/audio/audio_opus_stream.c"
     "services/sr/xiaozhi_sr.c"
     "infrastructure/esp_provisioning/esp_prov_adapter.c"
     "infrastructure/esp_provisioning/esp_prov_strategy.c"
     "xiaozhi/xiaozhi_handle.c"
     "xiaozhi/xiaozhi_device.c"
     "xiaozhi/xiaozhi_ota.c"
+    "xiaozhi/xiaozhi_protocol.c"
     "xiaozhi/xiaozhi_ws.c")
 
 if(CONFIG_XIAOZHI_AUDIO_DIAG_ENABLE)
@@ -30,7 +33,6 @@ endif()
 
 if(CONFIG_XIAOZHI_AUDIO_OPUS_DIAG_ENABLE)
     list(APPEND MAIN_SRCS
-        "services/audio/audio_opus_codec.c"
         "services/audio/audio_opus_diag.c")
 endif()
 

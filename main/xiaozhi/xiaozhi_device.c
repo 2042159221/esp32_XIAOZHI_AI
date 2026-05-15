@@ -97,6 +97,24 @@ static void generate_uuid_v4(char *uuid, size_t uuid_size)
              bytes[15]);
 }
 
+esp_err_t xiaozhi_device_format_mac_str(const unsigned char mac_bytes[6], char *mac, size_t mac_size)
+{
+    ESP_RETURN_ON_FALSE(mac_bytes != NULL, ESP_ERR_INVALID_ARG, TAG, "mac bytes is null");
+    ESP_RETURN_ON_FALSE(mac != NULL, ESP_ERR_INVALID_ARG, TAG, "mac output is null");
+    ESP_RETURN_ON_FALSE(mac_size >= XIAOZHI_MAC_STR_LEN, ESP_ERR_INVALID_ARG, TAG, "mac buffer too small");
+
+    snprintf(mac,
+             mac_size,
+             "%02x:%02x:%02x:%02x:%02x:%02x",
+             mac_bytes[0],
+             mac_bytes[1],
+             mac_bytes[2],
+             mac_bytes[3],
+             mac_bytes[4],
+             mac_bytes[5]);
+    return ESP_OK;
+}
+
 esp_err_t xiaozhi_device_get_or_create_uuid(char *uuid, size_t uuid_size)
 {
     ESP_RETURN_ON_FALSE(uuid != NULL, ESP_ERR_INVALID_ARG, TAG, "uuid output is null");
@@ -144,17 +162,7 @@ esp_err_t xiaozhi_device_get_mac_str(char *mac, size_t mac_size)
         err = esp_read_mac(mac_bytes, ESP_MAC_WIFI_STA);
     }
     ESP_RETURN_ON_ERROR(err, TAG, "get wifi sta mac failed");
-
-    snprintf(mac,
-             mac_size,
-             "%02X:%02X:%02X:%02X:%02X:%02X",
-             mac_bytes[0],
-             mac_bytes[1],
-             mac_bytes[2],
-             mac_bytes[3],
-             mac_bytes[4],
-             mac_bytes[5]);
-    return ESP_OK;
+    return xiaozhi_device_format_mac_str(mac_bytes, mac, mac_size);
 }
 
 esp_err_t xiaozhi_device_get_ip_str(char *ip, size_t ip_size)

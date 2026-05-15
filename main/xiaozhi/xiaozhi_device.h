@@ -13,6 +13,7 @@ extern "C" {
 #define XIAOZHI_IPV4_STR_LEN 16
 #define XIAOZHI_ELF_SHA256_MIN_STR_LEN 65
 
+esp_err_t xiaozhi_device_format_mac_str(const unsigned char mac_bytes[6], char *mac, size_t mac_size);
 esp_err_t xiaozhi_device_get_or_create_uuid(char *uuid, size_t uuid_size);
 esp_err_t xiaozhi_device_get_mac_str(char *mac, size_t mac_size);
 esp_err_t xiaozhi_device_get_ip_str(char *ip, size_t ip_size);

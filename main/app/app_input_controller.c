@@ -69,4 +69,14 @@ static void adc_button_cb(void *button_handle, void *usr_data)
             }
         }
     }
+
+    if (button_index == BOARD_BUTTON_SW3 && event == BUTTON_SINGLE_CLICK) {
+        ESP_LOGI(TAG, "SW3 voice trigger detected");
+        if (s_config.voice_trigger_cb != NULL) {
+            esp_err_t err = s_config.voice_trigger_cb(s_config.user_ctx);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "voice trigger ignored: %s", esp_err_to_name(err));
+            }
+        }
+    }
 }

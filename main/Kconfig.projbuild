@@ -117,6 +117,14 @@ menu "Xiaozhi Agent Stage1 Configuration"
         help
             Delay between OTA DNS resolution or HTTP connect retries.
 
+    config XIAOZHI_STAGE1_AUTO_SR_ENABLE
+        bool "Auto initialize SR after WebSocket READY"
+        default n
+        help
+            Automatically start WakeNet/VAD/AFE after the Xiaozhi WebSocket
+            handshake reaches READY. Keep this disabled while isolating
+            SR/AFE initialization crashes.
+
     config XIAOZHI_AUDIO_DIAG_ENABLE
         bool "Build audio diagnostics helpers"
         default n
@@ -199,6 +207,15 @@ menu "Xiaozhi Agent Stage1 Configuration"
         help
             Build local PCM -> Opus -> PCM diagnostics. This does not connect
             to WebSocket or the Xiaozhi backend and does not run automatically.
+
+    config XIAOZHI_AUDIO_OPUS_STREAM_ENABLE
+        bool "Build Xiaozhi WebSocket Opus audio stream"
+        default y
+        select AUDIO_ENCODER_OPUS_SUPPORT
+        select AUDIO_DECODER_OPUS_SUPPORT
+        help
+            Enable the production Xiaozhi voice path: SR PCM to Opus uplink and
+            WebSocket Opus downlink to speaker playback.
 
     choice XIAOZHI_AUDIO_OPUS_DIAG_FRAME_DURATION
         prompt "Opus diagnostics frame duration"
@@ -361,11 +378,11 @@ menu "Xiaozhi Provisioning Configuration"
 
     config APP_PROV_STOP_DELAY_MS
         int "Provisioning stop delay (ms)"
-        default 10000
-        range 1000 60000
+        default 500
+        range 0 60000
         help
-            Delay before the application actively stops the provisioning service
-            after successful WiFi provisioning. Increase this if the phone app
-            still reports an error after the device has already connected.
+            Fallback delay used by wifi_prov_mgr auto-stop handling. Xiaozhi
+            business startup is gated by WiFi got IP and provisioning deinit,
+            not by this delay.
 
 endmenu
