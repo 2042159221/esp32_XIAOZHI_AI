@@ -291,7 +291,7 @@ menu "Xiaozhi Agent Stage1 Configuration"
     config XIAOZHI_AUDIO_OPUS_DIAG_SOURCE_TASK_STACK_SIZE
         int "Opus diagnostics source task stack size"
         depends on XIAOZHI_AUDIO_OPUS_DIAG_ENABLE
-        default 6144
+        default 8192
         range 4096 32768
 
     config XIAOZHI_AUDIO_OPUS_DIAG_ENCODER_TASK_STACK_SIZE
