@@ -110,6 +110,22 @@ def check_downlink_sample_rate(failures: list[str]) -> None:
     require("BSP_AUDIO_SAMPLE_RATE == AUDIO_OPUS_SAMPLE_RATE" not in stream_source,
             "audio_opus_stream.c must not hard-fail playback because BSP default is 16 kHz", failures)
 
+    open_body = function_body(bsp_source, "bsp_audio_open")
+    require("s_codec_opened" in open_body and "return ESP_OK" in open_body,
+            "bsp_audio_open must preserve an already-open codec sample rate", failures)
+    reconfig_body = function_body(bsp_source, "reconfigure_i2s_sample_rate")
+    require("old_sample_rate" in reconfig_body and "restore_i2s_sample_rate" in bsp_source,
+            "reconfigure_i2s_sample_rate must restore the previous I2S rate after failures", failures)
+    open_rate_body = function_body(bsp_source, "bsp_audio_open_with_sample_rate_locked")
+    require("old_sample_rate" in open_rate_body and "old_fs" in open_rate_body,
+            "bsp_audio_open_with_sample_rate must recover codec/I2S state after open failures", failures)
+    require("s_audio_lock" in bsp_source and "xSemaphoreCreateMutex" in bsp_source,
+            "bsp_audio.c must serialize audio open and volume operations with a mutex", failures)
+
+    stream_start_body = function_body(stream_source, "audio_opus_stream_start")
+    require("config->pcm_source == s_stream.pcm_source" in stream_start_body,
+            "audio_opus_stream_start must reject pcm_source changes while running", failures)
+
 
 def check_voice_session_task(failures: list[str]) -> None:
     controller = read("main/app/app_controller.c")

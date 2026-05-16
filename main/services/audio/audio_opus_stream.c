@@ -310,6 +310,12 @@ esp_err_t audio_opus_stream_start(const audio_opus_stream_config_t *config)
                             "cannot change running stream sample_rate old=%d new=%d",
                             s_stream.decoder_output_sample_rate,
                             requested_rate);
+        ESP_RETURN_ON_FALSE(config->pcm_source == s_stream.pcm_source,
+                            ESP_ERR_INVALID_STATE,
+                            TAG,
+                            "cannot change running stream pcm_source old=%d new=%d",
+                            s_stream.pcm_source,
+                            config->pcm_source);
         s_stream.send_cb = config->send_cb;
         s_stream.user_ctx = config->user_ctx;
         return ESP_OK;

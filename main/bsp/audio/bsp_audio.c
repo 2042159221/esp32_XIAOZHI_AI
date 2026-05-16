@@ -8,6 +8,8 @@
 #include "esp_check.h"
 #include "esp_codec_dev_defaults.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "bsp_audio";
 
@@ -18,6 +20,36 @@ static const audio_codec_data_if_t *s_i2s_data_if;
 static esp_codec_dev_handle_t s_codec;
 static bool s_codec_opened;
 static int s_current_sample_rate = BSP_AUDIO_SAMPLE_RATE;
+static SemaphoreHandle_t s_audio_lock;
+static portMUX_TYPE s_audio_lock_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static esp_err_t bsp_audio_init_locked(void);
+static esp_err_t bsp_audio_open_with_sample_rate_locked(int sample_rate);
+
+static esp_err_t ensure_audio_lock(void)
+{
+    if (s_audio_lock != NULL) {
+        return ESP_OK;
+    }
+
+    SemaphoreHandle_t created_lock = xSemaphoreCreateMutex();
+    if (created_lock == NULL) {
+        ESP_RETURN_ON_FALSE(s_audio_lock != NULL, ESP_ERR_NO_MEM, TAG, "create audio mutex failed");
+        return ESP_OK;
+    }
+
+    portENTER_CRITICAL(&s_audio_lock_mux);
+    if (s_audio_lock == NULL) {
+        s_audio_lock = created_lock;
+        created_lock = NULL;
+    }
+    portEXIT_CRITICAL(&s_audio_lock_mux);
+
+    if (created_lock != NULL) {
+        vSemaphoreDelete(created_lock);
+    }
+    return ESP_OK;
+}
 
 static esp_err_t probe_es8311_addr(uint8_t *addr)
 {
@@ -122,31 +154,92 @@ static bool is_supported_sample_rate(int sample_rate)
     return sample_rate == 16000 || sample_rate == 24000;
 }
 
-static esp_err_t reconfigure_i2s_sample_rate(int sample_rate)
+static void restore_i2s_sample_rate(int old_sample_rate)
+{
+    i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(old_sample_rate);
+
+    esp_err_t tx_disable = i2s_channel_disable(s_i2s_tx_chan);
+    if (tx_disable != ESP_OK && tx_disable != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "disable I2S TX for restore failed: %s", esp_err_to_name(tx_disable));
+    }
+    esp_err_t rx_disable = i2s_channel_disable(s_i2s_rx_chan);
+    if (rx_disable != ESP_OK && rx_disable != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "disable I2S RX for restore failed: %s", esp_err_to_name(rx_disable));
+    }
+
+    esp_err_t tx_reconfig = i2s_channel_reconfig_std_clock(s_i2s_tx_chan, &clk_cfg);
+    if (tx_reconfig != ESP_OK) {
+        ESP_LOGE(TAG, "restore I2S TX clock to %d Hz failed: %s", old_sample_rate, esp_err_to_name(tx_reconfig));
+    }
+    esp_err_t rx_reconfig = i2s_channel_reconfig_std_clock(s_i2s_rx_chan, &clk_cfg);
+    if (rx_reconfig != ESP_OK) {
+        ESP_LOGE(TAG, "restore I2S RX clock to %d Hz failed: %s", old_sample_rate, esp_err_to_name(rx_reconfig));
+    }
+
+    esp_err_t tx_enable = i2s_channel_enable(s_i2s_tx_chan);
+    if (tx_enable != ESP_OK) {
+        ESP_LOGE(TAG, "restore I2S TX enable failed: %s", esp_err_to_name(tx_enable));
+    }
+    esp_err_t rx_enable = i2s_channel_enable(s_i2s_rx_chan);
+    if (rx_enable != ESP_OK) {
+        ESP_LOGE(TAG, "restore I2S RX enable failed: %s", esp_err_to_name(rx_enable));
+    }
+}
+
+static esp_err_t reconfigure_i2s_sample_rate(int old_sample_rate, int sample_rate)
 {
     ESP_RETURN_ON_FALSE(s_i2s_tx_chan != NULL && s_i2s_rx_chan != NULL, ESP_ERR_INVALID_STATE, TAG, "I2S channels are not ready");
+    ESP_RETURN_ON_FALSE(is_supported_sample_rate(old_sample_rate), ESP_ERR_INVALID_ARG, TAG, "unsupported old audio sample rate=%d", old_sample_rate);
     ESP_RETURN_ON_FALSE(is_supported_sample_rate(sample_rate), ESP_ERR_INVALID_ARG, TAG, "unsupported audio sample rate=%d", sample_rate);
+
+    if (old_sample_rate == sample_rate) {
+        return ESP_OK;
+    }
 
     esp_err_t tx_disable = i2s_channel_disable(s_i2s_tx_chan);
     esp_err_t rx_disable = i2s_channel_disable(s_i2s_rx_chan);
     if (tx_disable != ESP_OK && tx_disable != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "disable I2S TX before sample-rate switch failed: %s", esp_err_to_name(tx_disable));
+        restore_i2s_sample_rate(old_sample_rate);
         return tx_disable;
     }
     if (rx_disable != ESP_OK && rx_disable != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "disable I2S RX before sample-rate switch failed: %s", esp_err_to_name(rx_disable));
+        restore_i2s_sample_rate(old_sample_rate);
         return rx_disable;
     }
 
     i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate);
-    ESP_RETURN_ON_ERROR(i2s_channel_reconfig_std_clock(s_i2s_tx_chan, &clk_cfg), TAG, "reconfig I2S TX clock failed");
-    ESP_RETURN_ON_ERROR(i2s_channel_reconfig_std_clock(s_i2s_rx_chan, &clk_cfg), TAG, "reconfig I2S RX clock failed");
-    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_i2s_tx_chan), TAG, "enable I2S TX failed");
-    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_i2s_rx_chan), TAG, "enable I2S RX failed");
+    esp_err_t err = i2s_channel_reconfig_std_clock(s_i2s_tx_chan, &clk_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "reconfig I2S TX clock to %d Hz failed: %s", sample_rate, esp_err_to_name(err));
+        restore_i2s_sample_rate(old_sample_rate);
+        return err;
+    }
+    err = i2s_channel_reconfig_std_clock(s_i2s_rx_chan, &clk_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "reconfig I2S RX clock to %d Hz failed: %s", sample_rate, esp_err_to_name(err));
+        restore_i2s_sample_rate(old_sample_rate);
+        return err;
+    }
+    err = i2s_channel_enable(s_i2s_tx_chan);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "enable I2S TX at %d Hz failed: %s", sample_rate, esp_err_to_name(err));
+        restore_i2s_sample_rate(old_sample_rate);
+        return err;
+    }
+    err = i2s_channel_enable(s_i2s_rx_chan);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "enable I2S RX at %d Hz failed: %s", sample_rate, esp_err_to_name(err));
+        restore_i2s_sample_rate(old_sample_rate);
+        return err;
+    }
 
     ESP_LOGI(TAG, "I2S sample rate reconfigured to %d Hz", sample_rate);
     return ESP_OK;
 }
 
-esp_err_t bsp_audio_init(void)
+static esp_err_t bsp_audio_init_locked(void)
 {
     if (s_codec != NULL) {
         return ESP_OK;
@@ -200,6 +293,18 @@ esp_err_t bsp_audio_init(void)
     return ESP_OK;
 }
 
+esp_err_t bsp_audio_init(void)
+{
+    ESP_RETURN_ON_ERROR(ensure_audio_lock(), TAG, "create audio mutex failed");
+    ESP_RETURN_ON_FALSE(xSemaphoreTake(s_audio_lock, pdMS_TO_TICKS(1000)) == pdTRUE,
+                        ESP_ERR_TIMEOUT,
+                        TAG,
+                        "take audio mutex failed");
+    esp_err_t err = bsp_audio_init_locked();
+    xSemaphoreGive(s_audio_lock);
+    return err;
+}
+
 esp_codec_dev_handle_t bsp_audio_get_codec(void)
 {
     return s_codec;
@@ -215,12 +320,20 @@ i2c_master_bus_handle_t bsp_audio_get_i2c_bus(void)
     return s_i2c_bus;
 }
 
-esp_err_t bsp_audio_open_with_sample_rate(int sample_rate)
+static esp_err_t bsp_audio_open_with_sample_rate_locked(int sample_rate)
 {
     ESP_RETURN_ON_FALSE(is_supported_sample_rate(sample_rate), ESP_ERR_INVALID_ARG, TAG, "unsupported codec sample rate=%d", sample_rate);
-    ESP_RETURN_ON_ERROR(bsp_audio_init(), TAG, "init codec before open failed");
+    ESP_RETURN_ON_ERROR(bsp_audio_init_locked(), TAG, "init codec before open failed");
 
-    if (s_codec_opened && s_current_sample_rate == sample_rate) {
+    const bool had_open_codec = s_codec_opened;
+    const int old_sample_rate = is_supported_sample_rate(s_current_sample_rate) ? s_current_sample_rate : BSP_AUDIO_SAMPLE_RATE;
+    esp_codec_dev_sample_info_t old_fs = {
+        .sample_rate = old_sample_rate,
+        .channel = BSP_AUDIO_CHANNELS,
+        .bits_per_sample = BSP_AUDIO_BITS_PER_SAMPLE,
+    };
+
+    if (s_codec_opened && old_sample_rate == sample_rate) {
         return ESP_OK;
     }
 
@@ -234,7 +347,23 @@ esp_err_t bsp_audio_open_with_sample_rate(int sample_rate)
         s_codec_opened = false;
     }
 
-    ESP_RETURN_ON_ERROR(reconfigure_i2s_sample_rate(sample_rate), TAG, "reconfigure I2S sample rate failed");
+    esp_err_t err = reconfigure_i2s_sample_rate(old_sample_rate, sample_rate);
+    if (err != ESP_OK) {
+        if (had_open_codec) {
+            int reopen_ret = esp_codec_dev_open(s_codec, &old_fs);
+            if (reopen_ret == ESP_CODEC_DEV_OK) {
+                s_codec_opened = true;
+                s_current_sample_rate = old_sample_rate;
+                ESP_LOGW(TAG, "codec restored to previous sample_rate=%d after I2S switch failure", old_sample_rate);
+            } else {
+                ESP_LOGE(TAG,
+                         "restore codec to sample_rate=%d after I2S switch failure failed: %d; audio path needs restart/retry",
+                         old_sample_rate,
+                         reopen_ret);
+            }
+        }
+        return err;
+    }
 
     esp_codec_dev_sample_info_t fs = {
         .sample_rate = sample_rate,
@@ -242,7 +371,34 @@ esp_err_t bsp_audio_open_with_sample_rate(int sample_rate)
         .bits_per_sample = BSP_AUDIO_BITS_PER_SAMPLE,
     };
     int ret = esp_codec_dev_open(s_codec, &fs);
-    ESP_RETURN_ON_FALSE(ret == ESP_CODEC_DEV_OK, ESP_FAIL, TAG, "open codec failed: %d", ret);
+    if (ret != ESP_CODEC_DEV_OK) {
+        ESP_LOGE(TAG, "open codec sample_rate=%d failed: %d", sample_rate, ret);
+        esp_err_t restore_err = reconfigure_i2s_sample_rate(sample_rate, old_sample_rate);
+        if (restore_err != ESP_OK) {
+            ESP_LOGE(TAG,
+                     "restore I2S sample rate to %d Hz after codec open failure failed: %s; audio path needs restart/retry",
+                     old_sample_rate,
+                     esp_err_to_name(restore_err));
+            s_codec_opened = false;
+            return ESP_FAIL;
+        }
+
+        if (had_open_codec) {
+            int reopen_ret = esp_codec_dev_open(s_codec, &old_fs);
+            if (reopen_ret == ESP_CODEC_DEV_OK) {
+                s_codec_opened = true;
+                s_current_sample_rate = old_sample_rate;
+                ESP_LOGW(TAG, "codec restored to previous sample_rate=%d after open failure", old_sample_rate);
+            } else {
+                ESP_LOGE(TAG,
+                         "restore codec to sample_rate=%d after open failure failed: %d; audio path needs restart/retry",
+                         old_sample_rate,
+                         reopen_ret);
+                s_codec_opened = false;
+            }
+        }
+        return ESP_FAIL;
+    }
 
     s_codec_opened = true;
     s_current_sample_rate = sample_rate;
@@ -250,9 +406,33 @@ esp_err_t bsp_audio_open_with_sample_rate(int sample_rate)
     return ESP_OK;
 }
 
+esp_err_t bsp_audio_open_with_sample_rate(int sample_rate)
+{
+    ESP_RETURN_ON_ERROR(ensure_audio_lock(), TAG, "create audio mutex failed");
+    ESP_RETURN_ON_FALSE(xSemaphoreTake(s_audio_lock, pdMS_TO_TICKS(1000)) == pdTRUE,
+                        ESP_ERR_TIMEOUT,
+                        TAG,
+                        "take audio mutex failed");
+    esp_err_t err = bsp_audio_open_with_sample_rate_locked(sample_rate);
+    xSemaphoreGive(s_audio_lock);
+    return err;
+}
+
 esp_err_t bsp_audio_open(void)
 {
-    return bsp_audio_open_with_sample_rate(BSP_AUDIO_SAMPLE_RATE);
+    ESP_RETURN_ON_ERROR(ensure_audio_lock(), TAG, "create audio mutex failed");
+    ESP_RETURN_ON_FALSE(xSemaphoreTake(s_audio_lock, pdMS_TO_TICKS(1000)) == pdTRUE,
+                        ESP_ERR_TIMEOUT,
+                        TAG,
+                        "take audio mutex failed");
+    if (s_codec_opened) {
+        xSemaphoreGive(s_audio_lock);
+        return ESP_OK;
+    }
+
+    esp_err_t err = bsp_audio_open_with_sample_rate_locked(BSP_AUDIO_SAMPLE_RATE);
+    xSemaphoreGive(s_audio_lock);
+    return err;
 }
 
 int bsp_audio_get_current_sample_rate(void)
@@ -262,10 +442,24 @@ int bsp_audio_get_current_sample_rate(void)
 
 esp_err_t bsp_audio_set_volume(int volume)
 {
+    ESP_RETURN_ON_ERROR(ensure_audio_lock(), TAG, "create audio mutex failed");
+    ESP_RETURN_ON_FALSE(xSemaphoreTake(s_audio_lock, pdMS_TO_TICKS(1000)) == pdTRUE,
+                        ESP_ERR_TIMEOUT,
+                        TAG,
+                        "take audio mutex failed");
+
+    esp_err_t err = ESP_OK;
     if (!s_codec_opened) {
-        ESP_RETURN_ON_ERROR(bsp_audio_open(), TAG, "open codec before set volume failed");
+        err = bsp_audio_open_with_sample_rate_locked(BSP_AUDIO_SAMPLE_RATE);
     }
-    int ret = esp_codec_dev_set_out_vol(s_codec, volume);
-    ESP_RETURN_ON_FALSE(ret == ESP_CODEC_DEV_OK, ESP_FAIL, TAG, "set volume failed: %d", ret);
-    return ESP_OK;
+    if (err == ESP_OK) {
+        int ret = esp_codec_dev_set_out_vol(s_codec, volume);
+        if (ret != ESP_CODEC_DEV_OK) {
+            ESP_LOGE(TAG, "set volume failed: %d", ret);
+            err = ESP_FAIL;
+        }
+    }
+
+    xSemaphoreGive(s_audio_lock);
+    return err;
 }
