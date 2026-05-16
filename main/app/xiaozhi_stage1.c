@@ -1,6 +1,5 @@
 #include "xiaozhi_stage1.h"
 #include "app_controller.h"
-#include "audio_opus_stream.h"
 #include "xiaozhi_ws.h"
 
 
@@ -38,8 +37,6 @@ static const char *TAG = "xiaozhi_stage1";
 #define XIAOZHI_STAGE1_OTA_TASK_PRIORITY 5
 
 #define XIAOZHI_STAGE1_ACTIVATION_POLL_MS 3000
-#define XIAOZHI_STAGE1_WS_READY_TIMEOUT_MS 15000
-#define XIAOZHI_STAGE1_WS_READY_POLL_MS 100
 #define UI_TEXT_CONNECT_FAILED "连接失败"
 
 #define UI_TEXT_INIT_FAILED "设备初始化失败"
@@ -61,7 +58,6 @@ static portMUX_TYPE s_ota_task_lock = portMUX_INITIALIZER_UNLOCKED;
 
 
 static void log_token_len(void);
-static esp_err_t wait_for_websocket_ready(void);
 #if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
 static void sr_wake_cb(void *user_ctx);
 static void sr_vad_state_cb(vad_state_t state, void *user_ctx);
@@ -137,29 +133,18 @@ static esp_err_t enter_ai_after_activation(void)
 
     esp_err_t err = xiaozhi_ws_start();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "start websocket failed: %s", esp_err_to_name(err));
-        xiaozhi_ui_show_error(UI_TEXT_CONNECT_FAILED, UI_TEXT_AI_START_FAILED);
-        return err;
-    }
-
-    ESP_LOGI(TAG, "waiting for websocket READY before SR gate");
-    err = wait_for_websocket_ready();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "websocket ready wait failed: %s", esp_err_to_name(err));
-        (void)xiaozhi_ws_stop();
-        xiaozhi_ui_show_error(UI_TEXT_CONNECT_FAILED, UI_TEXT_AI_START_FAILED);
-        return err;
+        ESP_LOGW(TAG, "initial websocket start failed, SR will keep wake detection alive: %s", esp_err_to_name(err));
     }
 
     err = app_controller_start_voice_session();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "start voice session task after websocket READY failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "start voice session task failed: %s", esp_err_to_name(err));
         xiaozhi_ui_show_error(UI_TEXT_CONNECT_FAILED, UI_TEXT_AI_START_FAILED);
         return err;
     }
 
 #if !CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
-    ESP_LOGI(TAG, "websocket READY; SR auto init disabled");
+    ESP_LOGI(TAG, "SR auto init disabled");
     return ESP_OK;
 }
 #else
@@ -197,29 +182,6 @@ static void log_token_len(void)
 
 }
 
-
-
-static esp_err_t wait_for_websocket_ready(void)
-{
-    const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(XIAOZHI_STAGE1_WS_READY_TIMEOUT_MS);
-
-    while (xTaskGetTickCount() < deadline) {
-        if (xiaozhi_ws_is_ready()) {
-            return ESP_OK;
-        }
-
-        xiaozhi_ws_state_t state = xiaozhi_ws_get_state();
-        if (state == XIAOZHI_WS_STATE_DISCONNECTED) {
-            ESP_LOGE(TAG, "websocket failed before READY state=%d", state);
-            return ESP_FAIL;
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(XIAOZHI_STAGE1_WS_READY_POLL_MS));
-    }
-
-    ESP_LOGE(TAG, "websocket READY wait timeout after %d ms", XIAOZHI_STAGE1_WS_READY_TIMEOUT_MS);
-    return ESP_ERR_TIMEOUT;
-}
 
 #if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
 static void sr_wake_cb(void *user_ctx)
