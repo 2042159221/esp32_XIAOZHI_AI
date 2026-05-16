@@ -728,8 +728,7 @@ esp_err_t xiaozhi_ws_trigger_detect_text(const char *text)
     }
 
     if (s_ws_state != XIAOZHI_WS_STATE_READY &&
-        s_ws_state != XIAOZHI_WS_STATE_WAKE_DETECTED &&
-        s_ws_state != XIAOZHI_WS_STATE_WAITING_RESPONSE) {
+        s_ws_state != XIAOZHI_WS_STATE_WAKE_DETECTED) {
         ESP_LOGW(TAG, "detect text invalid state=%s", state_name(s_ws_state));
         return ESP_ERR_INVALID_STATE;
     }
@@ -742,7 +741,6 @@ esp_err_t xiaozhi_ws_trigger_detect_text(const char *text)
 
     err = send_text_json(json, "listen detect");
     if (err == ESP_OK) {
-        s_waiting_tts_stop = true;
         set_state(XIAOZHI_WS_STATE_WAITING_RESPONSE);
         log_heap_stats("listen detect sent");
     } else {
