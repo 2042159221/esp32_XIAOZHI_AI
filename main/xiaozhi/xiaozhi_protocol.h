@@ -51,12 +51,14 @@ typedef struct {
 esp_err_t xiaozhi_protocol_build_hello_json(char **out_json);
 esp_err_t xiaozhi_protocol_build_listen_start_json(const char *session_id, const char *mode, char **out_json);
 esp_err_t xiaozhi_protocol_build_listen_stop_json(const char *session_id, char **out_json);
+esp_err_t xiaozhi_protocol_build_listen_detect_json(const char *session_id, const char *text, char **out_json);
 esp_err_t xiaozhi_protocol_build_abort_json(const char *session_id, const char *reason, char **out_json);
 esp_err_t xiaozhi_protocol_parse_server_message(const char *json, size_t len, xiaozhi_protocol_msg_t *out_msg);
 
 #define build_hello_json xiaozhi_protocol_build_hello_json
 #define build_listen_start_json xiaozhi_protocol_build_listen_start_json
 #define build_listen_stop_json xiaozhi_protocol_build_listen_stop_json
+#define build_listen_detect_json xiaozhi_protocol_build_listen_detect_json
 #define build_abort_json xiaozhi_protocol_build_abort_json
 #define parse_server_message xiaozhi_protocol_parse_server_message
 

@@ -88,6 +88,34 @@ TEST_CASE("listen start and stop json include session", "[xiaozhi_protocol]")
     cJSON_free(json);
 }
 
+TEST_CASE("listen detect json carries text and permits empty session", "[xiaozhi_protocol]")
+{
+    char *json = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, xiaozhi_protocol_build_listen_detect_json("", "你好，请介绍你自己", &json));
+    TEST_ASSERT_NOT_NULL(json);
+
+    cJSON *root = cJSON_Parse(json);
+    TEST_ASSERT_NOT_NULL(root);
+    assert_json_string(root, "session_id", "");
+    assert_json_string(root, "type", "listen");
+    assert_json_string(root, "state", "detect");
+    assert_json_string(root, "text", "你好，请介绍你自己");
+
+    cJSON_Delete(root);
+    cJSON_free(json);
+}
+
+TEST_CASE("listen detect json rejects empty text", "[xiaozhi_protocol]")
+{
+    char *json = NULL;
+
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, xiaozhi_protocol_build_listen_detect_json("sid-1", NULL, &json));
+    TEST_ASSERT_NULL(json);
+
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, xiaozhi_protocol_build_listen_detect_json("sid-1", "", &json));
+    TEST_ASSERT_NULL(json);
+}
+
 TEST_CASE("abort json includes default reason fallback", "[xiaozhi_protocol]")
 {
     char *json = NULL;

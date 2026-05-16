@@ -34,6 +34,14 @@ static esp_err_t add_session(cJSON *root, const char *session_id)
     return ESP_OK;
 }
 
+static esp_err_t add_session_optional(cJSON *root, const char *session_id)
+{
+    ESP_RETURN_ON_FALSE(root != NULL, ESP_ERR_INVALID_ARG, TAG, "root is required");
+    const char *value = session_id != NULL ? session_id : "";
+    ESP_RETURN_ON_FALSE(add_string(root, "session_id", value), ESP_ERR_NO_MEM, TAG, "add optional session_id failed");
+    return ESP_OK;
+}
+
 static void copy_json_string(cJSON *root, const char *key, char *dest, size_t dest_size)
 {
     if (dest == NULL || dest_size == 0) {
@@ -179,6 +187,30 @@ esp_err_t xiaozhi_protocol_build_listen_stop_json(const char *session_id, char *
     if (err == ESP_OK &&
         (!add_string(root, "type", "listen") ||
          !add_string(root, "state", "stop"))) {
+        err = ESP_ERR_NO_MEM;
+    }
+    if (err == ESP_OK) {
+        err = print_json(root, out_json);
+    }
+
+    cJSON_Delete(root);
+    return err;
+}
+
+esp_err_t xiaozhi_protocol_build_listen_detect_json(const char *session_id, const char *text, char **out_json)
+{
+    ESP_RETURN_ON_FALSE(out_json != NULL, ESP_ERR_INVALID_ARG, TAG, "out_json is NULL");
+    *out_json = NULL;
+    ESP_RETURN_ON_FALSE(text != NULL && text[0] != '\0', ESP_ERR_INVALID_ARG, TAG, "detect text is required");
+
+    cJSON *root = cJSON_CreateObject();
+    ESP_RETURN_ON_FALSE(root != NULL, ESP_ERR_NO_MEM, TAG, "create listen detect root failed");
+
+    esp_err_t err = add_session_optional(root, session_id);
+    if (err == ESP_OK &&
+        (!add_string(root, "type", "listen") ||
+         !add_string(root, "state", "detect") ||
+         !add_string(root, "text", text))) {
         err = ESP_ERR_NO_MEM;
     }
     if (err == ESP_OK) {
