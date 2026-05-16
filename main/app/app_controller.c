@@ -18,9 +18,10 @@ static const char *TAG = "app_controller";
 #define VOICE_SESSION_TASK_STACK 4096
 #define VOICE_SESSION_TASK_PRIORITY 5
 #define VOICE_SESSION_QUEUE_LEN 4
+#define XIAOZHI_P0_TEXT_TEST "你好，请介绍你自己"
 
 typedef enum {
-    VOICE_SESSION_EVT_TRIGGER_BUTTON = 0,
+    VOICE_SESSION_EVT_TEXT_TEST = 0,
 } voice_session_evt_t;
 
 static QueueHandle_t s_voice_evt_queue;
@@ -143,7 +144,7 @@ static esp_err_t voice_trigger_cb(void *user_ctx)
         return ESP_OK;
     }
 
-    const voice_session_evt_t evt = VOICE_SESSION_EVT_TRIGGER_BUTTON;
+    const voice_session_evt_t evt = VOICE_SESSION_EVT_TEXT_TEST;
     BaseType_t sent = xQueueSend(s_voice_evt_queue, &evt, 0);
     return sent == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
 }
@@ -181,9 +182,9 @@ static void voice_session_task(void *arg)
         }
 
         switch (evt) {
-        case VOICE_SESSION_EVT_TRIGGER_BUTTON: {
-            ESP_LOGI(TAG, "SW3 voice trigger detected");
-            esp_err_t err = xiaozhi_ws_trigger_detect_text("你好，请介绍你自己");
+        case VOICE_SESSION_EVT_TEXT_TEST: {
+            ESP_LOGI(TAG, "SW3 P0 text test trigger detected");
+            esp_err_t err = xiaozhi_ws_trigger_detect_text(XIAOZHI_P0_TEXT_TEST);
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "button detect ignored: %s", esp_err_to_name(err));
             }

@@ -163,6 +163,9 @@ static esp_err_t send_text_json(char *json, const char *label)
     }
 
     int len = (int)strlen(json);
+    if (label != NULL && strncmp(label, "listen", 6) == 0) {
+        ESP_LOGI(TAG, "%s payload=%s", label, json);
+    }
     int sent = esp_websocket_client_send_text(s_ws_client, json, len, pdMS_TO_TICKS(1000));
     if (sent != len) {
         ESP_LOGE(TAG, "%s send failed sent=%d len=%d", label, sent, len);
@@ -711,8 +714,41 @@ esp_err_t xiaozhi_ws_feed_processed_pcm(const uint8_t *data, size_t len)
 
 esp_err_t xiaozhi_ws_trigger_detect_text(const char *text)
 {
-    (void)text;
-    return xiaozhi_ws_on_wake_detected();
+    ESP_RETURN_ON_FALSE(text != NULL && text[0] != '\0', ESP_ERR_INVALID_ARG, TAG, "detect text is empty");
+
+    if (s_ws_state == XIAOZHI_WS_STATE_SPEAKING || s_waiting_tts_stop) {
+        ESP_LOGW(TAG, "detect text ignored while speaking state=%s", state_name(s_ws_state));
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t err = ensure_websocket_ready();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "detect text websocket not ready: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    if (s_ws_state != XIAOZHI_WS_STATE_READY &&
+        s_ws_state != XIAOZHI_WS_STATE_WAKE_DETECTED &&
+        s_ws_state != XIAOZHI_WS_STATE_WAITING_RESPONSE) {
+        ESP_LOGW(TAG, "detect text invalid state=%s", state_name(s_ws_state));
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    (void)audio_opus_stream_set_uplink_enabled(false);
+    audio_opus_stream_flush();
+
+    char *json = NULL;
+    ESP_RETURN_ON_ERROR(xiaozhi_protocol_build_listen_detect_json(s_session_id, text, &json), TAG, "build listen detect failed");
+
+    err = send_text_json(json, "listen detect");
+    if (err == ESP_OK) {
+        s_waiting_tts_stop = true;
+        set_state(XIAOZHI_WS_STATE_WAITING_RESPONSE);
+        log_heap_stats("listen detect sent");
+    } else {
+        set_state(XIAOZHI_WS_STATE_DISCONNECTED);
+    }
+    return err;
 }
 
 esp_err_t xiaozhi_ws_stop_listen(void)

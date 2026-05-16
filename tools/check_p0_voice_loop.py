@@ -95,20 +95,38 @@ def check_stream_direct_capture(failures: list[str]) -> None:
 
 def check_voice_session_task(failures: list[str]) -> None:
     controller = read("main/app/app_controller.c")
+    stage1 = read("main/app/xiaozhi_stage1.c")
     app_start_body = function_body(controller, "app_controller_start")
-    business_start_body = function_body(controller, "business_start_cb")
     voice_body = function_body(controller, "voice_trigger_cb")
 
     require("voice_session_task" in controller,
             "app_controller.c must define a voice_session_task", failures)
+    require("VOICE_SESSION_EVT_TEXT_TEST" in controller,
+            "app_controller.c must name SW3 single click as VOICE_SESSION_EVT_TEXT_TEST", failures)
+    require("你好，请介绍你自己" in controller,
+            "app_controller.c must keep the P0 detect text literal visible", failures)
     require("voice_session_start()" not in app_start_body,
             "voice_session_task must not start before provisioning completes", failures)
-    require("voice_session_start()" in business_start_body,
-            "voice_session_task must start from business_start_cb", failures)
+    require("app_controller_start_voice_session()" in stage1,
+            "voice_session_task must start from xiaozhi_stage1 via app_controller_start_voice_session", failures)
     require("xQueueSend" in voice_body,
             "voice_trigger_cb must enqueue a voice event", failures)
     require("xiaozhi_ws_trigger_listen" not in voice_body,
             "voice_trigger_cb must not call xiaozhi_ws_trigger_listen directly", failures)
+
+
+def check_detect_text_request(failures: list[str]) -> None:
+    ws_source = read("main/xiaozhi/xiaozhi_ws.c")
+    body = function_body(ws_source, "xiaozhi_ws_trigger_detect_text")
+
+    require("xiaozhi_protocol_build_listen_detect_json" in body,
+            "xiaozhi_ws_trigger_detect_text must build listen detect JSON", failures)
+    require("(void)text;" not in body,
+            "xiaozhi_ws_trigger_detect_text must not ignore text", failures)
+    require("ensure_websocket_ready()" in body,
+            "detect text must wait for websocket READY before sending", failures)
+    require("XIAOZHI_WS_STATE_WAITING_RESPONSE" in body,
+            "detect text must transition to WAITING_RESPONSE after send", failures)
 
 
 def main() -> int:
@@ -116,6 +134,7 @@ def main() -> int:
     check_sdkconfig_defaults(failures)
     check_codec_split(failures)
     check_stream_direct_capture(failures)
+    check_detect_text_request(failures)
     check_voice_session_task(failures)
 
     if failures:
