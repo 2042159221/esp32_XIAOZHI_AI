@@ -14,6 +14,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
 #include "freertos/ringbuf.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 static const char *TAG = "audio_opus_stream";
@@ -28,6 +29,10 @@ static const char *TAG = "audio_opus_stream";
 
 #ifndef CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_OPUS_RING_BYTES
 #define CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_OPUS_RING_BYTES 32768
+#endif
+
+#ifndef CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_CAPTURE_TASK_STACK_SIZE
+#define CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_CAPTURE_TASK_STACK_SIZE 8192
 #endif
 
 #ifndef CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_ENCODER_TASK_STACK_SIZE
@@ -46,8 +51,10 @@ static const char *TAG = "audio_opus_stream";
 #define AUDIO_OPUS_STREAM_RECV_TIMEOUT_MS 100
 #define AUDIO_OPUS_STREAM_SEND_TIMEOUT_MS 0
 #define AUDIO_OPUS_STREAM_SHUTDOWN_WAIT_MS 1500
+#define AUDIO_OPUS_STREAM_CAPTURE_IDLE_MS 20
 #define AUDIO_OPUS_STREAM_ENCODER_TASK_PRIORITY 6
 #define AUDIO_OPUS_STREAM_DECODER_TASK_PRIORITY 5
+#define AUDIO_OPUS_STREAM_CAPTURE_TASK_PRIORITY 5
 
 typedef struct {
     uint8_t *data;
@@ -60,11 +67,19 @@ typedef struct {
 typedef struct {
     RingbufHandle_t pcm_rb;
     RingbufHandle_t downlink_rb;
+    SemaphoreHandle_t codec_lock;
+    TaskHandle_t capture_task;
     TaskHandle_t encoder_task;
     TaskHandle_t decoder_task;
-    audio_opus_codec_t codec;
+    audio_opus_encoder_t encoder;
+    audio_opus_decoder_t decoder;
+    audio_opus_pcm_source_t pcm_source;
     audio_opus_stream_send_cb_t send_cb;
     void *user_ctx;
+    size_t pcm_frame_bytes;
+    size_t opus_frame_bytes;
+    size_t decoded_frame_bytes;
+    int decoder_output_sample_rate;
     volatile bool running;
     volatile bool uplink_enabled;
     uint32_t tx_frames;
@@ -74,13 +89,20 @@ typedef struct {
     uint32_t playback_failures;
     uint32_t uplink_drop_count;
     uint32_t downlink_drop_count;
+    uint32_t capture_failures;
     uint32_t log_window_frames;
 } audio_opus_stream_ctx_t;
 
 static audio_opus_stream_ctx_t s_stream;
 
+static void direct_capture_task(void *arg);
 static void encoder_task(void *arg);
 static void decoder_task(void *arg);
+
+static size_t pcm_frame_bytes_for_sample_rate(int sample_rate)
+{
+    return (size_t)((sample_rate * AUDIO_OPUS_CHANNELS * (AUDIO_OPUS_BITS_PER_SAMPLE / 8) * AUDIO_OPUS_FRAME_DURATION_MS) / 1000);
+}
 
 static RingbufHandle_t create_stream_ringbuffer(size_t size)
 {
@@ -99,12 +121,12 @@ static void *alloc_stream_buffer(size_t size)
     return heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 }
 
-static void delete_current_stream_task(void)
+static void delete_stream_task(TaskHandle_t task)
 {
 #if CONFIG_SPIRAM
-    vTaskDeleteWithCaps(NULL);
+    vTaskDeleteWithCaps(task);
 #else
-    vTaskDelete(NULL);
+    vTaskDelete(task);
 #endif
 }
 
@@ -123,6 +145,18 @@ static esp_err_t create_stream_task(TaskFunction_t task_fn, const char *name, ui
     BaseType_t created = xTaskCreate(task_fn, name, stack_size, NULL, priority, handle);
 #endif
     return created == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+static bool lock_codec(TickType_t timeout)
+{
+    return s_stream.codec_lock != NULL && xSemaphoreTake(s_stream.codec_lock, timeout) == pdTRUE;
+}
+
+static void unlock_codec(void)
+{
+    if (s_stream.codec_lock != NULL) {
+        xSemaphoreGive(s_stream.codec_lock);
+    }
 }
 
 static void drain_ringbuffer(RingbufHandle_t rb)
@@ -215,6 +249,53 @@ static esp_err_t open_audio_path(int output_volume)
     return ESP_OK;
 }
 
+static esp_err_t ensure_encoder_locked(void)
+{
+    if (s_stream.encoder.encoder != NULL) {
+        return ESP_OK;
+    }
+
+    audio_opus_decoder_close(&s_stream.decoder);
+    esp_err_t err = audio_opus_encoder_open(&s_stream.encoder);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    s_stream.pcm_frame_bytes = s_stream.encoder.pcm_frame_bytes;
+    s_stream.opus_frame_bytes = s_stream.encoder.opus_frame_bytes;
+    return ESP_OK;
+}
+
+static esp_err_t ensure_decoder_locked(void)
+{
+    if (s_stream.decoder.decoder != NULL) {
+        return ESP_OK;
+    }
+
+    audio_opus_encoder_close(&s_stream.encoder);
+    esp_err_t err = audio_opus_decoder_open(&s_stream.decoder, s_stream.decoder_output_sample_rate);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    s_stream.decoded_frame_bytes = s_stream.decoder.decoded_frame_bytes;
+    ESP_LOGI(TAG,
+             "decoder output sample_rate=%d decoded_frame_bytes=%u",
+             s_stream.decoder_output_sample_rate,
+             (unsigned int)s_stream.decoded_frame_bytes);
+    return ESP_OK;
+}
+
+static void close_encoder_locked(void)
+{
+    audio_opus_encoder_close(&s_stream.encoder);
+}
+
+static void close_decoder_locked(void)
+{
+    audio_opus_decoder_close(&s_stream.decoder);
+}
+
 esp_err_t audio_opus_stream_start(const audio_opus_stream_config_t *config)
 {
     ESP_RETURN_ON_FALSE(config != NULL && config->send_cb != NULL, ESP_ERR_INVALID_ARG, TAG, "invalid stream config");
@@ -227,16 +308,36 @@ esp_err_t audio_opus_stream_start(const audio_opus_stream_config_t *config)
     memset(&s_stream, 0, sizeof(s_stream));
     s_stream.send_cb = config->send_cb;
     s_stream.user_ctx = config->user_ctx;
+    s_stream.pcm_source = config->pcm_source;
+    s_stream.decoder_output_sample_rate = config->decoder_output_sample_rate > 0 ? config->decoder_output_sample_rate : AUDIO_OPUS_SAMPLE_RATE;
+    s_stream.pcm_frame_bytes = AUDIO_OPUS_PCM_FRAME_BYTES;
+    s_stream.opus_frame_bytes = AUDIO_OPUS_ENCODED_FRAME_CAPACITY_BYTES;
+    s_stream.decoded_frame_bytes = pcm_frame_bytes_for_sample_rate(s_stream.decoder_output_sample_rate);
     s_stream.log_window_frames = (CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_LOG_WINDOW_MS + AUDIO_OPUS_FRAME_DURATION_MS - 1) / AUDIO_OPUS_FRAME_DURATION_MS;
     if (s_stream.log_window_frames == 0) {
         s_stream.log_window_frames = 1;
     }
 
-    const int volume = config->output_volume >= 0 ? config->output_volume : CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_VOLUME;
-    ESP_RETURN_ON_ERROR(open_audio_path(volume), TAG, "prepare stream audio path failed");
+    s_stream.codec_lock = xSemaphoreCreateMutex();
+    if (s_stream.codec_lock == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
 
-    esp_err_t err = audio_opus_codec_open(&s_stream.codec);
+    const int volume = config->output_volume >= 0 ? config->output_volume : CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_VOLUME;
+    esp_err_t err = open_audio_path(volume);
     if (err != ESP_OK) {
+        audio_opus_stream_stop();
+        return err;
+    }
+
+    if (!lock_codec(pdMS_TO_TICKS(1000))) {
+        audio_opus_stream_stop();
+        return ESP_ERR_TIMEOUT;
+    }
+    err = ensure_encoder_locked();
+    unlock_codec();
+    if (err != ESP_OK) {
+        audio_opus_stream_stop();
         return err;
     }
 
@@ -249,12 +350,12 @@ esp_err_t audio_opus_stream_start(const audio_opus_stream_config_t *config)
 
     const size_t pcm_max_item = xRingbufferGetMaxItemSize(s_stream.pcm_rb);
     const size_t opus_max_item = xRingbufferGetMaxItemSize(s_stream.downlink_rb);
-    if (AUDIO_OPUS_PCM_FRAME_BYTES > pcm_max_item || s_stream.codec.opus_frame_bytes > opus_max_item) {
+    if (s_stream.pcm_frame_bytes > pcm_max_item || s_stream.opus_frame_bytes > opus_max_item) {
         ESP_LOGE(TAG,
                  "stream ringbuffer too small pcm_frame=%u pcm_max_item=%u opus_frame=%u opus_max_item=%u",
-                 (unsigned int)AUDIO_OPUS_PCM_FRAME_BYTES,
+                 (unsigned int)s_stream.pcm_frame_bytes,
                  (unsigned int)pcm_max_item,
-                 (unsigned int)s_stream.codec.opus_frame_bytes,
+                 (unsigned int)s_stream.opus_frame_bytes,
                  (unsigned int)opus_max_item);
         audio_opus_stream_stop();
         return ESP_ERR_INVALID_SIZE;
@@ -273,15 +374,25 @@ esp_err_t audio_opus_stream_start(const audio_opus_stream_config_t *config)
                                  AUDIO_OPUS_STREAM_ENCODER_TASK_PRIORITY,
                                  &s_stream.encoder_task);
     }
+    if (err == ESP_OK && s_stream.pcm_source == AUDIO_OPUS_PCM_SOURCE_DIRECT_CODEC) {
+        err = create_stream_task(direct_capture_task,
+                                 "opus_capture",
+                                 CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_CAPTURE_TASK_STACK_SIZE,
+                                 AUDIO_OPUS_STREAM_CAPTURE_TASK_PRIORITY,
+                                 &s_stream.capture_task);
+    }
     if (err != ESP_OK) {
         audio_opus_stream_stop();
         return err;
     }
 
     ESP_LOGI(TAG,
-             "opus stream started pcm_frame_bytes=%u opus_capacity=%u pcm_ring=%u opus_ring=%u free heap=%u minimum free heap=%u",
-             (unsigned int)s_stream.codec.pcm_frame_bytes,
-             (unsigned int)s_stream.codec.opus_frame_bytes,
+             "opus stream started pcm_source=%d pcm_frame_bytes=%u opus_capacity=%u decoder_output_sample_rate=%d decoded_frame_bytes=%u pcm_ring=%u opus_ring=%u free heap=%u minimum free heap=%u",
+             s_stream.pcm_source,
+             (unsigned int)s_stream.pcm_frame_bytes,
+             (unsigned int)s_stream.opus_frame_bytes,
+             s_stream.decoder_output_sample_rate,
+             (unsigned int)s_stream.decoded_frame_bytes,
              (unsigned int)CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_PCM_RING_BYTES,
              (unsigned int)CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_OPUS_RING_BYTES,
              (unsigned int)esp_get_free_heap_size(),
@@ -297,17 +408,31 @@ esp_err_t audio_opus_stream_stop(void)
     drain_ringbuffer(s_stream.downlink_rb);
 
     const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(AUDIO_OPUS_STREAM_SHUTDOWN_WAIT_MS);
-    while ((s_stream.encoder_task != NULL || s_stream.decoder_task != NULL) && xTaskGetTickCount() < deadline) {
+    while ((s_stream.capture_task != NULL || s_stream.encoder_task != NULL || s_stream.decoder_task != NULL) &&
+           xTaskGetTickCount() < deadline) {
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 
+    if (s_stream.capture_task != NULL) {
+        delete_stream_task(s_stream.capture_task);
+        s_stream.capture_task = NULL;
+    }
     if (s_stream.encoder_task != NULL) {
-        vTaskDelete(s_stream.encoder_task);
+        delete_stream_task(s_stream.encoder_task);
         s_stream.encoder_task = NULL;
     }
     if (s_stream.decoder_task != NULL) {
-        vTaskDelete(s_stream.decoder_task);
+        delete_stream_task(s_stream.decoder_task);
         s_stream.decoder_task = NULL;
+    }
+
+    if (s_stream.codec_lock != NULL && lock_codec(pdMS_TO_TICKS(1000))) {
+        close_encoder_locked();
+        close_decoder_locked();
+        unlock_codec();
+    } else {
+        audio_opus_encoder_close(&s_stream.encoder);
+        audio_opus_decoder_close(&s_stream.decoder);
     }
 
     if (s_stream.pcm_rb != NULL) {
@@ -318,18 +443,22 @@ esp_err_t audio_opus_stream_stop(void)
         vRingbufferDelete(s_stream.downlink_rb);
         s_stream.downlink_rb = NULL;
     }
+    if (s_stream.codec_lock != NULL) {
+        vSemaphoreDelete(s_stream.codec_lock);
+        s_stream.codec_lock = NULL;
+    }
 
-    audio_opus_codec_close(&s_stream.codec);
     s_stream.send_cb = NULL;
     s_stream.user_ctx = NULL;
 
     ESP_LOGI(TAG,
-             "opus stream stopped tx_frames=%u tx_bytes=%u rx_frames=%u decoded_frames=%u playback_failures=%u uplink drop count=%u downlink drop count=%u free heap=%u minimum free heap=%u",
+             "opus stream stopped tx_frames=%u tx_bytes=%u rx_frames=%u decoded_frames=%u playback_failures=%u capture_failures=%u uplink drop count=%u downlink drop count=%u free heap=%u minimum free heap=%u",
              (unsigned int)s_stream.tx_frames,
              (unsigned int)s_stream.tx_bytes,
              (unsigned int)s_stream.rx_frames,
              (unsigned int)s_stream.decoded_frames,
              (unsigned int)s_stream.playback_failures,
+             (unsigned int)s_stream.capture_failures,
              (unsigned int)s_stream.uplink_drop_count,
              (unsigned int)s_stream.downlink_drop_count,
              (unsigned int)esp_get_free_heap_size(),
@@ -342,17 +471,52 @@ esp_err_t audio_opus_stream_set_uplink_enabled(bool enabled)
     if (!s_stream.running) {
         return enabled ? ESP_ERR_INVALID_STATE : ESP_OK;
     }
-    s_stream.uplink_enabled = enabled;
-    if (!enabled) {
+
+    esp_err_t err = ESP_OK;
+    if (enabled) {
+        if (!lock_codec(pdMS_TO_TICKS(1000))) {
+            return ESP_ERR_TIMEOUT;
+        }
+        close_decoder_locked();
+        err = ensure_encoder_locked();
+        unlock_codec();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "open encoder for uplink failed: %s", esp_err_to_name(err));
+            return err;
+        }
+        s_stream.uplink_enabled = true;
+    } else {
+        s_stream.uplink_enabled = false;
         drain_ringbuffer(s_stream.pcm_rb);
+        if (lock_codec(pdMS_TO_TICKS(1000))) {
+            close_encoder_locked();
+            unlock_codec();
+        } else {
+            err = ESP_ERR_TIMEOUT;
+        }
     }
+
     ESP_LOGI(TAG, "opus uplink %s", enabled ? "enabled" : "disabled");
-    return ESP_OK;
+    return err;
 }
 
 bool audio_opus_stream_is_uplink_enabled(void)
 {
     return s_stream.running && s_stream.uplink_enabled;
+}
+
+esp_err_t audio_opus_stream_close_decoder(void)
+{
+    if (!s_stream.running) {
+        return ESP_OK;
+    }
+    if (!lock_codec(pdMS_TO_TICKS(1000))) {
+        return ESP_ERR_TIMEOUT;
+    }
+    close_decoder_locked();
+    unlock_codec();
+    ESP_LOGI(TAG, "opus decoder closed");
+    return ESP_OK;
 }
 
 esp_err_t audio_opus_stream_feed_pcm(const uint8_t *pcm, size_t len)
@@ -414,12 +578,49 @@ void audio_opus_stream_flush(void)
     drain_ringbuffer(s_stream.downlink_rb);
 }
 
+static void direct_capture_task(void *arg)
+{
+    (void)arg;
+    uint8_t *pcm_frame = (uint8_t *)alloc_stream_buffer(s_stream.pcm_frame_bytes);
+    if (pcm_frame == NULL) {
+        ESP_LOGE(TAG, "allocate direct capture buffer failed");
+        s_stream.running = false;
+        goto done;
+    }
+
+    ESP_LOGI(TAG, "direct codec capture task started pcm_frame_bytes=%u", (unsigned int)s_stream.pcm_frame_bytes);
+    while (s_stream.running) {
+        if (s_stream.pcm_source != AUDIO_OPUS_PCM_SOURCE_DIRECT_CODEC || !s_stream.uplink_enabled) {
+            vTaskDelay(pdMS_TO_TICKS(AUDIO_OPUS_STREAM_CAPTURE_IDLE_MS));
+            continue;
+        }
+
+        int read_ret = esp_codec_dev_read(bsp_audio_get_codec(), pcm_frame, (int)s_stream.pcm_frame_bytes);
+        if (read_ret != ESP_CODEC_DEV_OK) {
+            s_stream.capture_failures++;
+            ESP_LOGW(TAG, "direct codec capture failed: %d capture_failures=%u", read_ret, (unsigned int)s_stream.capture_failures);
+            vTaskDelay(pdMS_TO_TICKS(AUDIO_OPUS_STREAM_CAPTURE_IDLE_MS));
+            continue;
+        }
+
+        esp_err_t err = audio_opus_stream_feed_pcm(pcm_frame, s_stream.pcm_frame_bytes);
+        if (err != ESP_OK && err != ESP_ERR_TIMEOUT && err != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "direct capture feed pcm failed: %s", esp_err_to_name(err));
+        }
+    }
+
+done:
+    heap_caps_free(pcm_frame);
+    s_stream.capture_task = NULL;
+    delete_stream_task(NULL);
+}
+
 static void encoder_task(void *arg)
 {
     (void)arg;
     uint8_t *accum_storage = (uint8_t *)alloc_stream_buffer(AUDIO_OPUS_STREAM_ACCUM_BYTES);
-    uint8_t *pcm_frame = (uint8_t *)alloc_stream_buffer(s_stream.codec.pcm_frame_bytes);
-    uint8_t *opus_frame = (uint8_t *)alloc_stream_buffer(s_stream.codec.opus_frame_bytes);
+    uint8_t *pcm_frame = (uint8_t *)alloc_stream_buffer(s_stream.pcm_frame_bytes);
+    uint8_t *opus_frame = (uint8_t *)alloc_stream_buffer(s_stream.opus_frame_bytes);
     pcm_accum_t accum = {0};
 
     if (accum_storage == NULL || pcm_frame == NULL || opus_frame == NULL) {
@@ -457,18 +658,29 @@ static void encoder_task(void *arg)
         }
         vRingbufferReturnItem(s_stream.pcm_rb, item);
 
-        while (s_stream.running && s_stream.uplink_enabled && accum.used >= s_stream.codec.pcm_frame_bytes) {
-            if (!accum_read(&accum, pcm_frame, s_stream.codec.pcm_frame_bytes)) {
+        while (s_stream.running && s_stream.uplink_enabled && accum.used >= s_stream.pcm_frame_bytes) {
+            if (!accum_read(&accum, pcm_frame, s_stream.pcm_frame_bytes)) {
                 break;
             }
 
+            if (!lock_codec(pdMS_TO_TICKS(1000))) {
+                s_stream.uplink_drop_count++;
+                ESP_LOGW(TAG, "opus uplink encode skipped because codec lock timed out");
+                continue;
+            }
+
+            esp_err_t err = ensure_encoder_locked();
             size_t opus_len = 0;
-            esp_err_t err = audio_opus_codec_encode(&s_stream.codec,
-                                                    pcm_frame,
-                                                    s_stream.codec.pcm_frame_bytes,
-                                                    opus_frame,
-                                                    s_stream.codec.opus_frame_bytes,
-                                                    &opus_len);
+            if (err == ESP_OK) {
+                err = audio_opus_encoder_encode(&s_stream.encoder,
+                                                pcm_frame,
+                                                s_stream.pcm_frame_bytes,
+                                                opus_frame,
+                                                s_stream.opus_frame_bytes,
+                                                &opus_len);
+            }
+            unlock_codec();
+
             if (err != ESP_OK) {
                 s_stream.uplink_drop_count++;
                 ESP_LOGW(TAG, "opus uplink encode failed: %s", esp_err_to_name(err));
@@ -506,13 +718,13 @@ done:
     heap_caps_free(pcm_frame);
     heap_caps_free(accum_storage);
     s_stream.encoder_task = NULL;
-    delete_current_stream_task();
+    delete_stream_task(NULL);
 }
 
 static void decoder_task(void *arg)
 {
     (void)arg;
-    uint8_t *decoded_frame = (uint8_t *)alloc_stream_buffer(s_stream.codec.decoded_frame_bytes);
+    uint8_t *decoded_frame = (uint8_t *)alloc_stream_buffer(s_stream.decoded_frame_bytes);
     if (decoded_frame == NULL) {
         ESP_LOGE(TAG, "allocate decoder stream buffer failed");
         s_stream.running = false;
@@ -526,14 +738,29 @@ static void decoder_task(void *arg)
             continue;
         }
 
+        s_stream.uplink_enabled = false;
+        drain_ringbuffer(s_stream.pcm_rb);
+
+        if (!lock_codec(pdMS_TO_TICKS(1000))) {
+            vRingbufferReturnItem(s_stream.downlink_rb, item);
+            s_stream.downlink_drop_count++;
+            ESP_LOGW(TAG, "downlink opus decode skipped because codec lock timed out");
+            continue;
+        }
+
+        esp_err_t err = ensure_decoder_locked();
         size_t decoded_len = 0;
-        esp_err_t err = audio_opus_codec_decode(&s_stream.codec,
-                                                item,
-                                                item_size,
-                                                decoded_frame,
-                                                s_stream.codec.decoded_frame_bytes,
-                                                &decoded_len);
+        if (err == ESP_OK) {
+            err = audio_opus_decoder_decode(&s_stream.decoder,
+                                            item,
+                                            item_size,
+                                            decoded_frame,
+                                            s_stream.decoded_frame_bytes,
+                                            &decoded_len);
+        }
+        unlock_codec();
         vRingbufferReturnItem(s_stream.downlink_rb, item);
+
         if (err != ESP_OK) {
             s_stream.downlink_drop_count++;
             ESP_LOGW(TAG, "downlink opus decode failed: %s", esp_err_to_name(err));
@@ -557,16 +784,17 @@ static void decoder_task(void *arg)
                      (unsigned int)s_stream.downlink_drop_count,
                      (unsigned int)esp_get_free_heap_size(),
                      (unsigned int)esp_get_minimum_free_heap_size());
+            ESP_LOGI(TAG, "speaker playback OK");
         }
     }
 
     if (decoded_frame != NULL) {
-        memset(decoded_frame, 0, s_stream.codec.decoded_frame_bytes);
-        (void)esp_codec_dev_write(bsp_audio_get_codec(), decoded_frame, (int)s_stream.codec.decoded_frame_bytes);
+        memset(decoded_frame, 0, s_stream.decoded_frame_bytes);
+        (void)esp_codec_dev_write(bsp_audio_get_codec(), decoded_frame, (int)s_stream.decoded_frame_bytes);
     }
 
 done:
     heap_caps_free(decoded_frame);
     s_stream.decoder_task = NULL;
-    delete_current_stream_task();
+    delete_stream_task(NULL);
 }

@@ -30,6 +30,20 @@ extern "C" {
 
 typedef struct {
     void *encoder;
+    size_t pcm_frame_bytes;
+    size_t opus_frame_bytes;
+    uint32_t encode_calls;
+} audio_opus_encoder_t;
+
+typedef struct {
+    void *decoder;
+    size_t decoded_frame_bytes;
+    uint32_t decode_calls;
+    int output_sample_rate;
+} audio_opus_decoder_t;
+
+typedef struct {
+    void *encoder;
     void *decoder;
     size_t pcm_frame_bytes;
     size_t opus_frame_bytes;
@@ -38,8 +52,28 @@ typedef struct {
     uint32_t decode_calls;
 } audio_opus_codec_t;
 
+esp_err_t audio_opus_encoder_open(audio_opus_encoder_t *enc);
+void audio_opus_encoder_close(audio_opus_encoder_t *enc);
+
+esp_err_t audio_opus_decoder_open(audio_opus_decoder_t *dec, int output_sample_rate);
+void audio_opus_decoder_close(audio_opus_decoder_t *dec);
+
 esp_err_t audio_opus_codec_open(audio_opus_codec_t *codec);
 void audio_opus_codec_close(audio_opus_codec_t *codec);
+
+esp_err_t audio_opus_encoder_encode(audio_opus_encoder_t *enc,
+                                  const uint8_t *pcm,
+                                  size_t pcm_len,
+                                  uint8_t *opus,
+                                  size_t opus_capacity,
+                                  size_t *opus_len);
+
+esp_err_t audio_opus_decoder_decode(audio_opus_decoder_t *dec,
+                                  const uint8_t *opus,
+                                  size_t opus_len,
+                                  uint8_t *pcm,
+                                  size_t pcm_capacity,
+                                  size_t *pcm_len);
 
 esp_err_t audio_opus_codec_encode(audio_opus_codec_t *codec,
                                   const uint8_t *pcm,

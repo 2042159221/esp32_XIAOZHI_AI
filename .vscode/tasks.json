@@ -7,7 +7,7 @@
 			"command": "cmd",
 			"args": [
 				"/c",
-				"call E:\\Espressif\\frameworks\\esp-idf-v5.3.1\\export.bat && set IDF_CCACHE_ENABLE=1 && idf.py build -j 8"
+				"call E:\\Espressif\\frameworks\\esp-idf-v5.3.1\\export.bat && set IDF_CCACHE_ENABLE=1 && idf.py build"
 			],
 			"isBackground": false,
 			"group": "build"

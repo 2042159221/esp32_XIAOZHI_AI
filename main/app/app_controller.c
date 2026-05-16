@@ -3,6 +3,9 @@
 #include "app_input_controller.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
 #include "provisioning_screen.h"
 #include "provisioning_service.h"
 #include "status_led_service.h"
@@ -11,6 +14,17 @@
 #include "xiaozhi_ws.h"
 
 static const char *TAG = "app_controller";
+
+#define VOICE_SESSION_TASK_STACK 4096
+#define VOICE_SESSION_TASK_PRIORITY 5
+#define VOICE_SESSION_QUEUE_LEN 4
+
+typedef enum {
+    VOICE_SESSION_EVT_TRIGGER_BUTTON = 0,
+} voice_session_evt_t;
+
+static QueueHandle_t s_voice_evt_queue;
+static TaskHandle_t s_voice_session_task;
 
 #define UI_TEXT_XIAOZHI_TITLE "尚硅谷" "AI" "小智"
 #define UI_TEXT_START_PROV "正在启动扫码配网"
@@ -32,6 +46,7 @@ static void provisioning_state_cb(provisioning_service_state_t state, void *user
 static void provisioning_qrcode_cb(const char *payload, void *user_ctx);
 static esp_err_t reset_provisioning_cb(void *user_ctx);
 static esp_err_t voice_trigger_cb(void *user_ctx);
+static void voice_session_task(void *arg);
 
 esp_err_t app_controller_start(void)
 {
@@ -122,6 +137,61 @@ static esp_err_t reset_provisioning_cb(void *user_ctx)
 static esp_err_t voice_trigger_cb(void *user_ctx)
 {
     (void)user_ctx;
-    ESP_LOGI(TAG, "button voice trigger");
-    return xiaozhi_ws_trigger_listen(XIAOZHI_WS_LISTEN_MODE_BUTTON);
+    ESP_LOGI(TAG, "button voice trigger queued");
+    if (s_voice_evt_queue == NULL) {
+        ESP_LOGW(TAG, "voice trigger ignored before voice session is ready");
+        return ESP_OK;
+    }
+
+    const voice_session_evt_t evt = VOICE_SESSION_EVT_TRIGGER_BUTTON;
+    BaseType_t sent = xQueueSend(s_voice_evt_queue, &evt, 0);
+    return sent == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+esp_err_t app_controller_start_voice_session(void)
+{
+    if (s_voice_evt_queue == NULL) {
+        s_voice_evt_queue = xQueueCreate(VOICE_SESSION_QUEUE_LEN, sizeof(voice_session_evt_t));
+        ESP_RETURN_ON_FALSE(s_voice_evt_queue != NULL, ESP_ERR_NO_MEM, TAG, "create voice event queue failed");
+    }
+
+    if (s_voice_session_task != NULL) {
+        return ESP_OK;
+    }
+
+    BaseType_t created = xTaskCreate(voice_session_task,
+                                     "voice_session",
+                                     VOICE_SESSION_TASK_STACK,
+                                     NULL,
+                                     VOICE_SESSION_TASK_PRIORITY,
+                                     &s_voice_session_task);
+    ESP_RETURN_ON_FALSE(created == pdPASS, ESP_ERR_NO_MEM, TAG, "create voice session task failed");
+    ESP_LOGI(TAG, "voice session task started");
+    return ESP_OK;
+}
+
+static void voice_session_task(void *arg)
+{
+    (void)arg;
+    voice_session_evt_t evt;
+
+    while (true) {
+        if (xQueueReceive(s_voice_evt_queue, &evt, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        switch (evt) {
+        case VOICE_SESSION_EVT_TRIGGER_BUTTON: {
+            ESP_LOGI(TAG, "SW3 voice trigger detected");
+            esp_err_t err = xiaozhi_ws_trigger_listen(XIAOZHI_WS_LISTEN_MODE_BUTTON);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "button listen start ignored: %s", esp_err_to_name(err));
+            }
+            break;
+        }
+        default:
+            ESP_LOGW(TAG, "unknown voice event=%d", evt);
+            break;
+        }
+    }
 }

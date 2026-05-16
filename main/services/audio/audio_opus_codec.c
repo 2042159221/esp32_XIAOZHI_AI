@@ -70,8 +70,10 @@ static esp_err_t audio_err_to_esp(esp_audio_err_t err)
 static void log_codec_heap_state(const char *stage)
 {
     ESP_LOGI(TAG,
-             "%s heap free=%u min_free=%u internal_free=%u internal_largest=%u spiram_free=%u spiram_largest=%u task_stack_watermark=%u",
+             "%s task=%s core=%d heap=%u min_free=%u internal_free=%u internal_largest=%u spiram_free=%u spiram_largest=%u stack_watermark=%u",
              stage,
+             pcTaskGetName(NULL),
+             xPortGetCoreID(),
              (unsigned int)esp_get_free_heap_size(),
              (unsigned int)esp_get_minimum_free_heap_size(),
              (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
@@ -81,10 +83,20 @@ static void log_codec_heap_state(const char *stage)
              (unsigned int)uxTaskGetStackHighWaterMark(NULL));
 }
 
-esp_err_t audio_opus_codec_open(audio_opus_codec_t *codec)
+static size_t decoded_frame_bytes_for_sample_rate(int sample_rate)
 {
-    ESP_RETURN_ON_FALSE(codec != NULL, ESP_ERR_INVALID_ARG, TAG, "codec handle is NULL");
-    memset(codec, 0, sizeof(*codec));
+    return (size_t)((sample_rate * AUDIO_OPUS_CHANNELS * (AUDIO_OPUS_BITS_PER_SAMPLE / 8) * AUDIO_OPUS_FRAME_DURATION_MS) / 1000);
+}
+
+static esp_err_t open_encoder_handle(void **encoder, size_t *pcm_frame_bytes, size_t *opus_frame_bytes)
+{
+    ESP_RETURN_ON_FALSE(encoder != NULL && pcm_frame_bytes != NULL && opus_frame_bytes != NULL,
+                        ESP_ERR_INVALID_ARG,
+                        TAG,
+                        "invalid encoder open args");
+    *encoder = NULL;
+    *pcm_frame_bytes = 0;
+    *opus_frame_bytes = 0;
 
     esp_opus_enc_config_t enc_cfg = ESP_OPUS_ENC_CONFIG_DEFAULT();
     enc_cfg.sample_rate = AUDIO_OPUS_SAMPLE_RATE;
@@ -112,11 +124,10 @@ esp_err_t audio_opus_codec_open(audio_opus_codec_t *codec)
              enc_cfg.enable_vbr);
     log_codec_heap_state("before opus encoder open");
 
-    esp_audio_err_t audio_ret = esp_opus_enc_open(&enc_cfg, sizeof(enc_cfg), &codec->encoder);
+    esp_audio_err_t audio_ret = esp_opus_enc_open(&enc_cfg, sizeof(enc_cfg), encoder);
     if (audio_ret != ESP_AUDIO_ERR_OK) {
-        ESP_LOGE(TAG, "open opus encoder failed: %d encoder=%p", audio_ret, codec->encoder);
+        ESP_LOGE(TAG, "open opus encoder failed: %d encoder=%p", audio_ret, *encoder);
         log_codec_heap_state("after opus encoder open failed");
-        audio_opus_codec_close(codec);
         return audio_err_to_esp(audio_ret);
     }
     ESP_LOGI(TAG, "opus encoder init OK");
@@ -124,10 +135,11 @@ esp_err_t audio_opus_codec_open(audio_opus_codec_t *codec)
 
     int enc_in_size = 0;
     int enc_out_size = 0;
-    audio_ret = esp_opus_enc_get_frame_size(codec->encoder, &enc_in_size, &enc_out_size);
+    audio_ret = esp_opus_enc_get_frame_size(*encoder, &enc_in_size, &enc_out_size);
     if (audio_ret != ESP_AUDIO_ERR_OK) {
         ESP_LOGE(TAG, "get opus encoder frame size failed: %d", audio_ret);
-        audio_opus_codec_close(codec);
+        esp_opus_enc_close(*encoder);
+        *encoder = NULL;
         return audio_err_to_esp(audio_ret);
     }
 
@@ -136,50 +148,126 @@ esp_err_t audio_opus_codec_open(audio_opus_codec_t *codec)
                  enc_in_size,
                  enc_out_size,
                  AUDIO_OPUS_PCM_FRAME_BYTES);
-        audio_opus_codec_close(codec);
+        esp_opus_enc_close(*encoder);
+        *encoder = NULL;
         return ESP_ERR_INVALID_STATE;
     }
 
+    *pcm_frame_bytes = (size_t)enc_in_size;
+    *opus_frame_bytes = (size_t)enc_out_size;
+    if (*opus_frame_bytes < AUDIO_OPUS_ENCODED_FRAME_CAPACITY_BYTES) {
+        *opus_frame_bytes = AUDIO_OPUS_ENCODED_FRAME_CAPACITY_BYTES;
+    }
+
+    ESP_LOGI(TAG,
+             "opus encoder ready sample_rate=%d channels=%d bits=%d frame_duration_ms=%d pcm_frame_bytes=%u opus_frame_recommended=%d opus_frame_capacity=%u bitrate=%d complexity=%d",
+             AUDIO_OPUS_SAMPLE_RATE,
+             AUDIO_OPUS_CHANNELS,
+             AUDIO_OPUS_BITS_PER_SAMPLE,
+             AUDIO_OPUS_FRAME_DURATION_MS,
+             (unsigned int)*pcm_frame_bytes,
+             enc_out_size,
+             (unsigned int)*opus_frame_bytes,
+             CONFIG_XIAOZHI_AUDIO_OPUS_DIAG_BITRATE,
+             CONFIG_XIAOZHI_AUDIO_OPUS_DIAG_COMPLEXITY);
+    return ESP_OK;
+}
+
+static esp_err_t open_decoder_handle(void **decoder, int output_sample_rate, size_t *decoded_frame_bytes)
+{
+    ESP_RETURN_ON_FALSE(decoder != NULL && decoded_frame_bytes != NULL, ESP_ERR_INVALID_ARG, TAG, "invalid decoder open args");
+    ESP_RETURN_ON_FALSE(output_sample_rate > 0, ESP_ERR_INVALID_ARG, TAG, "invalid decoder sample rate=%d", output_sample_rate);
+    *decoder = NULL;
+    *decoded_frame_bytes = 0;
+
     esp_opus_dec_cfg_t dec_cfg = ESP_OPUS_DEC_CONFIG_DEFAULT();
-    dec_cfg.sample_rate = AUDIO_OPUS_SAMPLE_RATE;
+    dec_cfg.sample_rate = output_sample_rate;
     dec_cfg.channel = AUDIO_OPUS_CHANNELS;
     dec_cfg.frame_duration = get_decoder_frame_duration();
     dec_cfg.self_delimited = false;
 
-    audio_ret = esp_opus_dec_open(&dec_cfg, sizeof(dec_cfg), &codec->decoder);
+    ESP_LOGI(TAG,
+             "opening opus decoder output_sample_rate=%u channels=%u frame_duration_ms=%u frame_duration_id=%u",
+             (unsigned int)dec_cfg.sample_rate,
+             (unsigned int)dec_cfg.channel,
+             (unsigned int)AUDIO_OPUS_FRAME_DURATION_MS,
+             (unsigned int)dec_cfg.frame_duration);
+    log_codec_heap_state("before opus decoder open");
+
+    esp_audio_err_t audio_ret = esp_opus_dec_open(&dec_cfg, sizeof(dec_cfg), decoder);
     if (audio_ret != ESP_AUDIO_ERR_OK) {
         ESP_LOGE(TAG, "open opus decoder failed: %d", audio_ret);
         log_codec_heap_state("after opus decoder open failed");
-        audio_opus_codec_close(codec);
         return audio_err_to_esp(audio_ret);
     }
     ESP_LOGI(TAG, "opus decoder init OK");
     log_codec_heap_state("after opus decoder open");
 
-    codec->pcm_frame_bytes = (size_t)enc_in_size;
-    codec->opus_frame_bytes = (size_t)enc_out_size;
-    if (codec->opus_frame_bytes < AUDIO_OPUS_ENCODED_FRAME_CAPACITY_BYTES) {
-        codec->opus_frame_bytes = AUDIO_OPUS_ENCODED_FRAME_CAPACITY_BYTES;
-    }
-    codec->decoded_frame_bytes = AUDIO_OPUS_PCM_FRAME_BYTES;
+    ESP_LOGI(TAG,
+             "opus decoder ready output_sample_rate=%d decoded_frame_bytes=%u",
+             output_sample_rate,
+             (unsigned int)decoded_frame_bytes_for_sample_rate(output_sample_rate));
+    *decoded_frame_bytes = decoded_frame_bytes_for_sample_rate(output_sample_rate);
+    return ESP_OK;
+}
 
-    ESP_LOGI(TAG,
-             "opus codec ready sample_rate=%d channels=%d bits=%d frame_duration_ms=%d pcm_frame_bytes=%u opus_frame_recommended=%d opus_frame_capacity=%u bitrate=%d complexity=%d",
-             AUDIO_OPUS_SAMPLE_RATE,
-             AUDIO_OPUS_CHANNELS,
-             AUDIO_OPUS_BITS_PER_SAMPLE,
-             AUDIO_OPUS_FRAME_DURATION_MS,
-             (unsigned int)codec->pcm_frame_bytes,
-             enc_out_size,
-             (unsigned int)codec->opus_frame_bytes,
-             CONFIG_XIAOZHI_AUDIO_OPUS_DIAG_BITRATE,
-             CONFIG_XIAOZHI_AUDIO_OPUS_DIAG_COMPLEXITY);
-    ESP_LOGI(TAG,
-             "opus codec runtime application=AUDIO free heap=%u internal free=%u minimum free heap=%u task stack watermark=%u",
-             (unsigned int)esp_get_free_heap_size(),
-             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-             (unsigned int)esp_get_minimum_free_heap_size(),
-             (unsigned int)uxTaskGetStackHighWaterMark(NULL));
+esp_err_t audio_opus_encoder_open(audio_opus_encoder_t *enc)
+{
+    ESP_RETURN_ON_FALSE(enc != NULL, ESP_ERR_INVALID_ARG, TAG, "encoder handle is NULL");
+    memset(enc, 0, sizeof(*enc));
+    return open_encoder_handle(&enc->encoder, &enc->pcm_frame_bytes, &enc->opus_frame_bytes);
+}
+
+void audio_opus_encoder_close(audio_opus_encoder_t *enc)
+{
+    if (enc == NULL) {
+        return;
+    }
+    if (enc->encoder != NULL) {
+        esp_opus_enc_close(enc->encoder);
+    }
+    memset(enc, 0, sizeof(*enc));
+}
+
+esp_err_t audio_opus_decoder_open(audio_opus_decoder_t *dec, int output_sample_rate)
+{
+    ESP_RETURN_ON_FALSE(dec != NULL, ESP_ERR_INVALID_ARG, TAG, "decoder handle is NULL");
+    memset(dec, 0, sizeof(*dec));
+
+    esp_err_t err = open_decoder_handle(&dec->decoder, output_sample_rate, &dec->decoded_frame_bytes);
+    if (err == ESP_OK) {
+        dec->output_sample_rate = output_sample_rate;
+    }
+    return err;
+}
+
+void audio_opus_decoder_close(audio_opus_decoder_t *dec)
+{
+    if (dec == NULL) {
+        return;
+    }
+    if (dec->decoder != NULL) {
+        (void)esp_opus_dec_close(dec->decoder);
+    }
+    memset(dec, 0, sizeof(*dec));
+}
+
+esp_err_t audio_opus_codec_open(audio_opus_codec_t *codec)
+{
+    ESP_RETURN_ON_FALSE(codec != NULL, ESP_ERR_INVALID_ARG, TAG, "codec handle is NULL");
+    memset(codec, 0, sizeof(*codec));
+
+    esp_err_t err = open_encoder_handle(&codec->encoder, &codec->pcm_frame_bytes, &codec->opus_frame_bytes);
+    if (err != ESP_OK) {
+        audio_opus_codec_close(codec);
+        return err;
+    }
+
+    err = open_decoder_handle(&codec->decoder, AUDIO_OPUS_SAMPLE_RATE, &codec->decoded_frame_bytes);
+    if (err != ESP_OK) {
+        audio_opus_codec_close(codec);
+        return err;
+    }
 
     return ESP_OK;
 }
@@ -200,19 +288,22 @@ void audio_opus_codec_close(audio_opus_codec_t *codec)
     memset(codec, 0, sizeof(*codec));
 }
 
-esp_err_t audio_opus_codec_encode(audio_opus_codec_t *codec,
-                                  const uint8_t *pcm,
-                                  size_t pcm_len,
-                                  uint8_t *opus,
-                                  size_t opus_capacity,
-                                  size_t *opus_len)
+static esp_err_t encode_with_handle(void *encoder,
+                                    size_t pcm_frame_bytes,
+                                    size_t opus_frame_bytes,
+                                    uint32_t *encode_calls,
+                                    const uint8_t *pcm,
+                                    size_t pcm_len,
+                                    uint8_t *opus,
+                                    size_t opus_capacity,
+                                    size_t *opus_len)
 {
-    ESP_RETURN_ON_FALSE(codec != NULL && codec->encoder != NULL, ESP_ERR_INVALID_STATE, TAG, "opus encoder is not ready");
+    ESP_RETURN_ON_FALSE(encoder != NULL, ESP_ERR_INVALID_STATE, TAG, "opus encoder is not ready");
     ESP_RETURN_ON_FALSE(pcm != NULL && opus != NULL && opus_len != NULL, ESP_ERR_INVALID_ARG, TAG, "invalid opus encode arguments");
-    ESP_RETURN_ON_FALSE(pcm_len == codec->pcm_frame_bytes, ESP_ERR_INVALID_SIZE, TAG, "invalid pcm input bytes=%u expected=%u",
+    ESP_RETURN_ON_FALSE(pcm_len == pcm_frame_bytes, ESP_ERR_INVALID_SIZE, TAG, "invalid pcm input bytes=%u expected=%u",
                         (unsigned int)pcm_len,
-                        (unsigned int)codec->pcm_frame_bytes);
-    ESP_RETURN_ON_FALSE(opus_capacity >= codec->opus_frame_bytes, ESP_ERR_INVALID_SIZE, TAG, "opus output buffer too small");
+                        (unsigned int)pcm_frame_bytes);
+    ESP_RETURN_ON_FALSE(opus_capacity >= opus_frame_bytes, ESP_ERR_INVALID_SIZE, TAG, "opus output buffer too small");
 
     esp_audio_enc_in_frame_t in_frame = {
         .buffer = (uint8_t *)pcm,
@@ -223,22 +314,24 @@ esp_err_t audio_opus_codec_encode(audio_opus_codec_t *codec,
         .len = (uint32_t)opus_capacity,
     };
 
-    codec->encode_calls++;
-    const uint32_t call_index = codec->encode_calls;
+    uint32_t local_calls = 0;
+    uint32_t *calls = encode_calls != NULL ? encode_calls : &local_calls;
+    (*calls)++;
+    const uint32_t call_index = *calls;
     if (should_log_codec_call(call_index)) {
         ESP_LOGI(TAG,
                  "before opus encode call=%u pcm input bytes=%u opus capacity bytes=%u encoder=%p free heap=%u internal free=%u minimum free heap=%u task stack watermark=%u",
                  (unsigned int)call_index,
                  (unsigned int)pcm_len,
                  (unsigned int)opus_capacity,
-                 codec->encoder,
+                 encoder,
                  (unsigned int)esp_get_free_heap_size(),
                  (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                  (unsigned int)esp_get_minimum_free_heap_size(),
                  (unsigned int)uxTaskGetStackHighWaterMark(NULL));
     }
 
-    esp_audio_err_t audio_ret = esp_opus_enc_process(codec->encoder, &in_frame, &out_frame);
+    esp_audio_err_t audio_ret = esp_opus_enc_process(encoder, &in_frame, &out_frame);
     if (audio_ret != ESP_AUDIO_ERR_OK) {
         ESP_LOGE(TAG, "opus encode failed: %d", audio_ret);
         return audio_err_to_esp(audio_ret);
@@ -261,17 +354,19 @@ esp_err_t audio_opus_codec_encode(audio_opus_codec_t *codec,
     return ESP_OK;
 }
 
-esp_err_t audio_opus_codec_decode(audio_opus_codec_t *codec,
-                                  const uint8_t *opus,
-                                  size_t opus_len,
-                                  uint8_t *pcm,
-                                  size_t pcm_capacity,
-                                  size_t *pcm_len)
+static esp_err_t decode_with_handle(void *decoder,
+                                    size_t decoded_frame_bytes,
+                                    uint32_t *decode_calls,
+                                    const uint8_t *opus,
+                                    size_t opus_len,
+                                    uint8_t *pcm,
+                                    size_t pcm_capacity,
+                                    size_t *pcm_len)
 {
-    ESP_RETURN_ON_FALSE(codec != NULL && codec->decoder != NULL, ESP_ERR_INVALID_STATE, TAG, "opus decoder is not ready");
+    ESP_RETURN_ON_FALSE(decoder != NULL, ESP_ERR_INVALID_STATE, TAG, "opus decoder is not ready");
     ESP_RETURN_ON_FALSE(opus != NULL && pcm != NULL && pcm_len != NULL, ESP_ERR_INVALID_ARG, TAG, "invalid opus decode arguments");
     ESP_RETURN_ON_FALSE(opus_len > 0, ESP_ERR_INVALID_SIZE, TAG, "empty opus input");
-    ESP_RETURN_ON_FALSE(pcm_capacity >= codec->decoded_frame_bytes, ESP_ERR_INVALID_SIZE, TAG, "decoded pcm buffer too small");
+    ESP_RETURN_ON_FALSE(pcm_capacity >= decoded_frame_bytes, ESP_ERR_INVALID_SIZE, TAG, "decoded pcm buffer too small");
 
     esp_audio_dec_in_raw_t raw = {
         .buffer = (uint8_t *)opus,
@@ -283,21 +378,23 @@ esp_err_t audio_opus_codec_decode(audio_opus_codec_t *codec,
     };
     esp_audio_dec_info_t info = {0};
 
-    codec->decode_calls++;
-    const uint32_t call_index = codec->decode_calls;
+    uint32_t local_calls = 0;
+    uint32_t *calls = decode_calls != NULL ? decode_calls : &local_calls;
+    (*calls)++;
+    const uint32_t call_index = *calls;
     if (should_log_codec_call(call_index)) {
         ESP_LOGI(TAG,
                  "before opus decode call=%u opus input bytes=%u pcm capacity bytes=%u decoder=%p free heap=%u internal free=%u task stack watermark=%u",
                  (unsigned int)call_index,
                  (unsigned int)opus_len,
                  (unsigned int)pcm_capacity,
-                 codec->decoder,
+                 decoder,
                  (unsigned int)esp_get_free_heap_size(),
                  (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                  (unsigned int)uxTaskGetStackHighWaterMark(NULL));
     }
 
-    esp_audio_err_t audio_ret = esp_opus_dec_decode(codec->decoder, &raw, &out_frame, &info);
+    esp_audio_err_t audio_ret = esp_opus_dec_decode(decoder, &raw, &out_frame, &info);
     if (audio_ret != ESP_AUDIO_ERR_OK) {
         ESP_LOGE(TAG, "opus decode failed: %d needed_size=%u consumed=%u",
                  audio_ret,
@@ -309,9 +406,9 @@ esp_err_t audio_opus_codec_decode(audio_opus_codec_t *codec,
     ESP_RETURN_ON_FALSE(raw.consumed == opus_len, ESP_FAIL, TAG, "opus decoder consumed %u of %u bytes",
                         (unsigned int)raw.consumed,
                         (unsigned int)opus_len);
-    ESP_RETURN_ON_FALSE(out_frame.decoded_size == codec->decoded_frame_bytes, ESP_FAIL, TAG, "decoded pcm bytes=%u expected=%u",
+    ESP_RETURN_ON_FALSE(out_frame.decoded_size == decoded_frame_bytes, ESP_FAIL, TAG, "decoded pcm bytes=%u expected=%u",
                         (unsigned int)out_frame.decoded_size,
-                        (unsigned int)codec->decoded_frame_bytes);
+                        (unsigned int)decoded_frame_bytes);
 
     if (should_log_codec_call(call_index)) {
         ESP_LOGI(TAG,
@@ -325,4 +422,78 @@ esp_err_t audio_opus_codec_decode(audio_opus_codec_t *codec,
     }
     *pcm_len = out_frame.decoded_size;
     return ESP_OK;
+}
+
+esp_err_t audio_opus_encoder_encode(audio_opus_encoder_t *enc,
+                                    const uint8_t *pcm,
+                                    size_t pcm_len,
+                                    uint8_t *opus,
+                                    size_t opus_capacity,
+                                    size_t *opus_len)
+{
+    ESP_RETURN_ON_FALSE(enc != NULL, ESP_ERR_INVALID_ARG, TAG, "encoder handle is NULL");
+    return encode_with_handle(enc->encoder,
+                              enc->pcm_frame_bytes,
+                              enc->opus_frame_bytes,
+                              &enc->encode_calls,
+                              pcm,
+                              pcm_len,
+                              opus,
+                              opus_capacity,
+                              opus_len);
+}
+
+esp_err_t audio_opus_decoder_decode(audio_opus_decoder_t *dec,
+                                    const uint8_t *opus,
+                                    size_t opus_len,
+                                    uint8_t *pcm,
+                                    size_t pcm_capacity,
+                                    size_t *pcm_len)
+{
+    ESP_RETURN_ON_FALSE(dec != NULL, ESP_ERR_INVALID_ARG, TAG, "decoder handle is NULL");
+    return decode_with_handle(dec->decoder,
+                              dec->decoded_frame_bytes,
+                              &dec->decode_calls,
+                              opus,
+                              opus_len,
+                              pcm,
+                              pcm_capacity,
+                              pcm_len);
+}
+
+esp_err_t audio_opus_codec_encode(audio_opus_codec_t *codec,
+                                  const uint8_t *pcm,
+                                  size_t pcm_len,
+                                  uint8_t *opus,
+                                  size_t opus_capacity,
+                                  size_t *opus_len)
+{
+    ESP_RETURN_ON_FALSE(codec != NULL, ESP_ERR_INVALID_ARG, TAG, "codec handle is NULL");
+    return encode_with_handle(codec->encoder,
+                              codec->pcm_frame_bytes,
+                              codec->opus_frame_bytes,
+                              &codec->encode_calls,
+                              pcm,
+                              pcm_len,
+                              opus,
+                              opus_capacity,
+                              opus_len);
+}
+
+esp_err_t audio_opus_codec_decode(audio_opus_codec_t *codec,
+                                  const uint8_t *opus,
+                                  size_t opus_len,
+                                  uint8_t *pcm,
+                                  size_t pcm_capacity,
+                                  size_t *pcm_len)
+{
+    ESP_RETURN_ON_FALSE(codec != NULL, ESP_ERR_INVALID_ARG, TAG, "codec handle is NULL");
+    return decode_with_handle(codec->decoder,
+                              codec->decoded_frame_bytes,
+                              &codec->decode_calls,
+                              opus,
+                              opus_len,
+                              pcm,
+                              pcm_capacity,
+                              pcm_len);
 }

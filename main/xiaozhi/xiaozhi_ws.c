@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "audio_opus_codec.h"
 #include "audio_opus_stream.h"
 #include "cJSON.h"
 #include "esp_check.h"
@@ -15,6 +16,7 @@
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "sdkconfig.h"
 #include "xiaozhi_device.h"
 #include "xiaozhi_handle.h"
 #include "xiaozhi_protocol.h"
@@ -72,10 +74,14 @@ static void set_state(xiaozhi_ws_state_t next)
 static void log_heap_stats(const char *label)
 {
     ESP_LOGI(TAG,
-             "%s free heap=%u internal free=%u minimum free heap=%u",
+             "%s heap: internal_free=%u internal_largest=%u 8bit_free=%u 8bit_largest=%u spiram_free=%u spiram_largest=%u minimum_free_heap=%u",
              label,
-             (unsigned int)esp_get_free_heap_size(),
              (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
              (unsigned int)esp_get_minimum_free_heap_size());
 }
 
@@ -198,6 +204,12 @@ static esp_err_t start_audio_stream(void)
         .send_cb = send_opus_frame,
         .user_ctx = NULL,
         .output_volume = -1,
+#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+        .pcm_source = AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED,
+#else
+        .pcm_source = AUDIO_OPUS_PCM_SOURCE_DIRECT_CODEC,
+#endif
+        .decoder_output_sample_rate = AUDIO_OPUS_SAMPLE_RATE,
     };
     return audio_opus_stream_start(&config);
 }
@@ -264,6 +276,7 @@ static void handle_tts(const xiaozhi_protocol_msg_t *msg)
     if (strcmp(msg->state, "stop") == 0) {
         ESP_LOGI(TAG, "tts stop");
         (void)audio_opus_stream_set_uplink_enabled(false);
+        (void)audio_opus_stream_close_decoder();
         set_state(XIAOZHI_WS_STATE_READY);
         return;
     }
@@ -377,6 +390,8 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
 
 esp_err_t xiaozhi_ws_start(void)
 {
+    log_heap_stats("xiaozhi_ws_start entry");
+
     if (!xiaozhi_handle_is_activated()) {
         ESP_LOGW(TAG, "skip websocket start because device is not activated");
         set_state(XIAOZHI_WS_STATE_ERROR);
@@ -415,7 +430,7 @@ esp_err_t xiaozhi_ws_start(void)
         .reconnect_timeout_ms = 5000,
         .disable_auto_reconnect = true,
         .buffer_size = 2048,
-        .task_stack = 6144,
+        .task_stack = 4096,
         .task_prio = 6,
     };
 

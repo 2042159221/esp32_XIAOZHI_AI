@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""Static P0 voice loop guardrails for the ESP-IDF app."""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def read(rel_path: str) -> str:
+    return (ROOT / rel_path).read_text(encoding="utf-8")
+
+
+def require(condition: bool, message: str, failures: list[str]) -> None:
+    if not condition:
+        failures.append(message)
+
+
+def function_body(source: str, name: str) -> str:
+    match = re.search(rf"\b{name}\s*\([^)]*\)\s*\{{", source)
+    if match is None:
+        return ""
+
+    depth = 0
+    start = match.end() - 1
+    for index in range(start, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start + 1:index]
+    return ""
+
+
+def check_sdkconfig_defaults(failures: list[str]) -> None:
+    defaults = read("sdkconfig.defaults")
+    require("CONFIG_SPIRAM_USE_MALLOC=y" in defaults, "sdkconfig.defaults must enable CONFIG_SPIRAM_USE_MALLOC=y", failures)
+    require("# CONFIG_SPIRAM_USE_CAPS_ALLOC is not set" in defaults,
+            "sdkconfig.defaults must disable CONFIG_SPIRAM_USE_CAPS_ALLOC", failures)
+    require("CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=2048" in defaults,
+            "sdkconfig.defaults must set CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=2048", failures)
+    require("CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536" in defaults,
+            "sdkconfig.defaults must reserve 65536 internal bytes", failures)
+    require("CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y" in defaults,
+            "sdkconfig.defaults must allow external task stacks for WithCaps tasks", failures)
+
+
+def check_codec_split(failures: list[str]) -> None:
+    header = read("main/services/audio/audio_opus_codec.h")
+    source = read("main/services/audio/audio_opus_codec.c")
+
+    for symbol in (
+        "audio_opus_encoder_open",
+        "audio_opus_encoder_close",
+        "audio_opus_decoder_open",
+        "audio_opus_decoder_close",
+    ):
+        require(symbol in header, f"audio_opus_codec.h must declare {symbol}", failures)
+        require(symbol in source, f"audio_opus_codec.c must define {symbol}", failures)
+
+    encoder_body = function_body(source, "audio_opus_encoder_open")
+    require("esp_opus_dec_open" not in encoder_body,
+            "audio_opus_encoder_open must not open the decoder", failures)
+
+
+def check_stream_direct_capture(failures: list[str]) -> None:
+    header = read("main/services/audio/audio_opus_stream.h")
+    source = read("main/services/audio/audio_opus_stream.c")
+
+    require("AUDIO_OPUS_PCM_SOURCE_DIRECT_CODEC" in header,
+            "audio_opus_stream.h must expose AUDIO_OPUS_PCM_SOURCE_DIRECT_CODEC", failures)
+    require("pcm_source" in header,
+            "audio_opus_stream_config_t must include a pcm_source field", failures)
+    require("direct_capture_task" in source,
+            "audio_opus_stream.c must implement a direct_capture_task", failures)
+    require("esp_codec_dev_read" in source,
+            "direct capture path must read PCM from the codec", failures)
+    require("audio_opus_stream_feed_pcm" in source,
+            "direct capture path must feed PCM through audio_opus_stream_feed_pcm", failures)
+
+    stop_body = function_body(source, "audio_opus_stream_stop")
+    require("delete_stream_task(" in stop_body,
+            "audio_opus_stream_stop must use delete_stream_task for created tasks", failures)
+    require("vTaskDelete(s_stream.encoder_task)" not in stop_body,
+            "audio_opus_stream_stop must not directly vTaskDelete encoder_task", failures)
+    require("vTaskDelete(s_stream.decoder_task)" not in stop_body,
+            "audio_opus_stream_stop must not directly vTaskDelete decoder_task", failures)
+
+
+def check_voice_session_task(failures: list[str]) -> None:
+    controller = read("main/app/app_controller.c")
+    app_start_body = function_body(controller, "app_controller_start")
+    business_start_body = function_body(controller, "business_start_cb")
+    voice_body = function_body(controller, "voice_trigger_cb")
+
+    require("voice_session_task" in controller,
+            "app_controller.c must define a voice_session_task", failures)
+    require("voice_session_start()" not in app_start_body,
+            "voice_session_task must not start before provisioning completes", failures)
+    require("voice_session_start()" in business_start_body,
+            "voice_session_task must start from business_start_cb", failures)
+    require("xQueueSend" in voice_body,
+            "voice_trigger_cb must enqueue a voice event", failures)
+    require("xiaozhi_ws_trigger_listen" not in voice_body,
+            "voice_trigger_cb must not call xiaozhi_ws_trigger_listen directly", failures)
+
+
+def main() -> int:
+    failures: list[str] = []
+    check_sdkconfig_defaults(failures)
+    check_codec_split(failures)
+    check_stream_direct_capture(failures)
+    check_voice_session_task(failures)
+
+    if failures:
+        print("P0 voice loop guardrails failed:")
+        for failure in failures:
+            print(f"- {failure}")
+        return 1
+
+    print("P0 voice loop guardrails passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
