@@ -103,9 +103,23 @@ TEST_CASE("listen detect json carries text and permits empty session", "[xiaozhi
 
     cJSON_Delete(root);
     cJSON_free(json);
+
+    json = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, xiaozhi_protocol_build_listen_detect_json(NULL, "你好，请介绍你自己", &json));
+    TEST_ASSERT_NOT_NULL(json);
+
+    root = cJSON_Parse(json);
+    TEST_ASSERT_NOT_NULL(root);
+    assert_json_string(root, "session_id", "");
+    assert_json_string(root, "type", "listen");
+    assert_json_string(root, "state", "detect");
+    assert_json_string(root, "text", "你好，请介绍你自己");
+
+    cJSON_Delete(root);
+    cJSON_free(json);
 }
 
-TEST_CASE("listen detect json rejects empty text", "[xiaozhi_protocol]")
+TEST_CASE("listen detect json rejects null or empty text", "[xiaozhi_protocol]")
 {
     char *json = NULL;
 
