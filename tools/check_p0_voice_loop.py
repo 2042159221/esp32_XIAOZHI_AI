@@ -93,6 +93,24 @@ def check_stream_direct_capture(failures: list[str]) -> None:
             "audio_opus_stream_stop must not directly vTaskDelete decoder_task", failures)
 
 
+def check_downlink_sample_rate(failures: list[str]) -> None:
+    ws_source = read("main/xiaozhi/xiaozhi_ws.c")
+    stream_source = read("main/services/audio/audio_opus_stream.c")
+    bsp_header = read("main/bsp/audio/bsp_audio.h")
+    bsp_source = read("main/bsp/audio/bsp_audio.c")
+
+    require("resolve_decoder_output_sample_rate" in ws_source,
+            "xiaozhi_ws.c must resolve decoder sample rate from server hello", failures)
+    require(".decoder_output_sample_rate = resolve_decoder_output_sample_rate()" in ws_source,
+            "start_audio_stream must pass server sample rate into audio_opus_stream", failures)
+    require("bsp_audio_open_with_sample_rate" in bsp_header,
+            "bsp_audio.h must expose bsp_audio_open_with_sample_rate", failures)
+    require("i2s_channel_reconfig_std_clock" in bsp_source,
+            "bsp_audio.c must reconfigure I2S std clock for 24 kHz playback", failures)
+    require("BSP_AUDIO_SAMPLE_RATE == AUDIO_OPUS_SAMPLE_RATE" not in stream_source,
+            "audio_opus_stream.c must not hard-fail playback because BSP default is 16 kHz", failures)
+
+
 def check_voice_session_task(failures: list[str]) -> None:
     controller = read("main/app/app_controller.c")
     stage1 = read("main/app/xiaozhi_stage1.c")
@@ -133,6 +151,7 @@ def main() -> int:
     failures: list[str] = []
     check_sdkconfig_defaults(failures)
     check_codec_split(failures)
+    check_downlink_sample_rate(failures)
     check_stream_direct_capture(failures)
     check_detect_text_request(failures)
     check_voice_session_task(failures)

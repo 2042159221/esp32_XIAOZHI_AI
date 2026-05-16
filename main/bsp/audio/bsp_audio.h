@@ -17,6 +17,8 @@ esp_codec_dev_handle_t bsp_audio_get_codec(void);
 i2c_master_bus_handle_t bsp_audio_get_i2c_bus(void);
 esp_err_t bsp_audio_init_i2c_bus(void);
 esp_err_t bsp_audio_open(void);
+esp_err_t bsp_audio_open_with_sample_rate(int sample_rate);
+int bsp_audio_get_current_sample_rate(void);
 esp_err_t bsp_audio_set_volume(int volume);
 
 #ifdef __cplusplus

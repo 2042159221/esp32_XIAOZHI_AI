@@ -17,6 +17,7 @@ static i2s_chan_handle_t s_i2s_rx_chan;
 static const audio_codec_data_if_t *s_i2s_data_if;
 static esp_codec_dev_handle_t s_codec;
 static bool s_codec_opened;
+static int s_current_sample_rate = BSP_AUDIO_SAMPLE_RATE;
 
 static esp_err_t probe_es8311_addr(uint8_t *addr)
 {
@@ -116,6 +117,35 @@ static esp_err_t init_i2s(void)
     return ESP_OK;
 }
 
+static bool is_supported_sample_rate(int sample_rate)
+{
+    return sample_rate == 16000 || sample_rate == 24000;
+}
+
+static esp_err_t reconfigure_i2s_sample_rate(int sample_rate)
+{
+    ESP_RETURN_ON_FALSE(s_i2s_tx_chan != NULL && s_i2s_rx_chan != NULL, ESP_ERR_INVALID_STATE, TAG, "I2S channels are not ready");
+    ESP_RETURN_ON_FALSE(is_supported_sample_rate(sample_rate), ESP_ERR_INVALID_ARG, TAG, "unsupported audio sample rate=%d", sample_rate);
+
+    esp_err_t tx_disable = i2s_channel_disable(s_i2s_tx_chan);
+    esp_err_t rx_disable = i2s_channel_disable(s_i2s_rx_chan);
+    if (tx_disable != ESP_OK && tx_disable != ESP_ERR_INVALID_STATE) {
+        return tx_disable;
+    }
+    if (rx_disable != ESP_OK && rx_disable != ESP_ERR_INVALID_STATE) {
+        return rx_disable;
+    }
+
+    i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate);
+    ESP_RETURN_ON_ERROR(i2s_channel_reconfig_std_clock(s_i2s_tx_chan, &clk_cfg), TAG, "reconfig I2S TX clock failed");
+    ESP_RETURN_ON_ERROR(i2s_channel_reconfig_std_clock(s_i2s_rx_chan, &clk_cfg), TAG, "reconfig I2S RX clock failed");
+    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_i2s_tx_chan), TAG, "enable I2S TX failed");
+    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_i2s_rx_chan), TAG, "enable I2S RX failed");
+
+    ESP_LOGI(TAG, "I2S sample rate reconfigured to %d Hz", sample_rate);
+    return ESP_OK;
+}
+
 esp_err_t bsp_audio_init(void)
 {
     if (s_codec != NULL) {
@@ -185,27 +215,56 @@ i2c_master_bus_handle_t bsp_audio_get_i2c_bus(void)
     return s_i2c_bus;
 }
 
-esp_err_t bsp_audio_open(void)
+esp_err_t bsp_audio_open_with_sample_rate(int sample_rate)
 {
+    ESP_RETURN_ON_FALSE(is_supported_sample_rate(sample_rate), ESP_ERR_INVALID_ARG, TAG, "unsupported codec sample rate=%d", sample_rate);
     ESP_RETURN_ON_ERROR(bsp_audio_init(), TAG, "init codec before open failed");
-    if (s_codec_opened) {
+
+    if (s_codec_opened && s_current_sample_rate == sample_rate) {
         return ESP_OK;
     }
 
+    if (s_codec_opened) {
+        int mute_ret = esp_codec_dev_set_out_mute(s_codec, true);
+        if (mute_ret != ESP_CODEC_DEV_OK) {
+            ESP_LOGW(TAG, "mute before sample-rate switch failed: %d", mute_ret);
+        }
+        int close_ret = esp_codec_dev_close(s_codec);
+        ESP_RETURN_ON_FALSE(close_ret == ESP_CODEC_DEV_OK, ESP_FAIL, TAG, "close codec before sample-rate switch failed: %d", close_ret);
+        s_codec_opened = false;
+    }
+
+    ESP_RETURN_ON_ERROR(reconfigure_i2s_sample_rate(sample_rate), TAG, "reconfigure I2S sample rate failed");
+
     esp_codec_dev_sample_info_t fs = {
-        .sample_rate = BSP_AUDIO_SAMPLE_RATE,
+        .sample_rate = sample_rate,
         .channel = BSP_AUDIO_CHANNELS,
         .bits_per_sample = BSP_AUDIO_BITS_PER_SAMPLE,
     };
     int ret = esp_codec_dev_open(s_codec, &fs);
     ESP_RETURN_ON_FALSE(ret == ESP_CODEC_DEV_OK, ESP_FAIL, TAG, "open codec failed: %d", ret);
+
     s_codec_opened = true;
+    s_current_sample_rate = sample_rate;
+    ESP_LOGI(TAG, "codec opened sample_rate=%d channels=%d bits=%d", sample_rate, BSP_AUDIO_CHANNELS, BSP_AUDIO_BITS_PER_SAMPLE);
     return ESP_OK;
+}
+
+esp_err_t bsp_audio_open(void)
+{
+    return bsp_audio_open_with_sample_rate(BSP_AUDIO_SAMPLE_RATE);
+}
+
+int bsp_audio_get_current_sample_rate(void)
+{
+    return s_current_sample_rate;
 }
 
 esp_err_t bsp_audio_set_volume(int volume)
 {
-    ESP_RETURN_ON_ERROR(bsp_audio_open(), TAG, "open codec before set volume failed");
+    if (!s_codec_opened) {
+        ESP_RETURN_ON_ERROR(bsp_audio_open(), TAG, "open codec before set volume failed");
+    }
     int ret = esp_codec_dev_set_out_vol(s_codec, volume);
     ESP_RETURN_ON_FALSE(ret == ESP_CODEC_DEV_OK, ESP_FAIL, TAG, "set volume failed: %d", ret);
     return ESP_OK;

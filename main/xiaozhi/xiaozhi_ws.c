@@ -216,6 +216,27 @@ static esp_err_t send_opus_frame(const uint8_t *opus, size_t len, void *user_ctx
     return ESP_OK;
 }
 
+static int resolve_decoder_output_sample_rate(void)
+{
+    if (s_server_audio.format[0] != '\0' && strcmp(s_server_audio.format, XIAOZHI_PROTOCOL_AUDIO_FORMAT) != 0) {
+        ESP_LOGW(TAG, "unsupported server audio format=%s, fallback sample_rate=%d", s_server_audio.format, AUDIO_OPUS_SAMPLE_RATE);
+        return AUDIO_OPUS_SAMPLE_RATE;
+    }
+    if (s_server_audio.channels > 0 && s_server_audio.channels != AUDIO_OPUS_CHANNELS) {
+        ESP_LOGW(TAG, "unsupported server audio channels=%d, fallback sample_rate=%d", s_server_audio.channels, AUDIO_OPUS_SAMPLE_RATE);
+        return AUDIO_OPUS_SAMPLE_RATE;
+    }
+    if (s_server_audio.frame_duration_ms > 0 && s_server_audio.frame_duration_ms != AUDIO_OPUS_FRAME_DURATION_MS) {
+        ESP_LOGW(TAG, "unsupported server frame_duration=%d, fallback sample_rate=%d", s_server_audio.frame_duration_ms, AUDIO_OPUS_SAMPLE_RATE);
+        return AUDIO_OPUS_SAMPLE_RATE;
+    }
+    if (s_server_audio.sample_rate == 16000 || s_server_audio.sample_rate == 24000) {
+        return s_server_audio.sample_rate;
+    }
+    ESP_LOGW(TAG, "server sample_rate=%d unsupported, fallback sample_rate=%d", s_server_audio.sample_rate, AUDIO_OPUS_SAMPLE_RATE);
+    return AUDIO_OPUS_SAMPLE_RATE;
+}
+
 static esp_err_t start_audio_stream(audio_opus_pcm_source_t pcm_source)
 {
     const audio_opus_stream_config_t config = {
@@ -223,7 +244,7 @@ static esp_err_t start_audio_stream(audio_opus_pcm_source_t pcm_source)
         .user_ctx = NULL,
         .output_volume = -1,
         .pcm_source = pcm_source,
-        .decoder_output_sample_rate = AUDIO_OPUS_SAMPLE_RATE,
+        .decoder_output_sample_rate = resolve_decoder_output_sample_rate(),
     };
     return audio_opus_stream_start(&config);
 }

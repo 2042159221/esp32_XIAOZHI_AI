@@ -234,11 +234,10 @@ static bool accum_read(pcm_accum_t *accum, uint8_t *data, size_t len)
     return true;
 }
 
-static esp_err_t open_audio_path(int output_volume)
+static esp_err_t open_audio_path(int output_volume, int playback_sample_rate)
 {
-    ESP_RETURN_ON_ERROR(bsp_audio_open(), TAG, "open audio codec failed");
+    ESP_RETURN_ON_ERROR(bsp_audio_open_with_sample_rate(playback_sample_rate), TAG, "open audio codec failed");
     ESP_RETURN_ON_ERROR(bsp_audio_set_volume(output_volume), TAG, "set stream volume failed");
-    ESP_RETURN_ON_FALSE(BSP_AUDIO_SAMPLE_RATE == AUDIO_OPUS_SAMPLE_RATE, ESP_ERR_NOT_SUPPORTED, TAG, "Opus stream expects 16 kHz audio");
     ESP_RETURN_ON_FALSE(BSP_AUDIO_BITS_PER_SAMPLE == AUDIO_OPUS_BITS_PER_SAMPLE && BSP_AUDIO_CHANNELS == AUDIO_OPUS_CHANNELS,
                         ESP_ERR_NOT_SUPPORTED,
                         TAG,
@@ -247,6 +246,9 @@ static esp_err_t open_audio_path(int output_volume)
     if (mute_ret != ESP_CODEC_DEV_OK) {
         ESP_LOGW(TAG, "unmute stream output failed: %d", mute_ret);
     }
+    ESP_LOGI(TAG, "audio path ready playback_sample_rate=%d current_codec_sample_rate=%d",
+             playback_sample_rate,
+             bsp_audio_get_current_sample_rate());
     return ESP_OK;
 }
 
@@ -301,6 +303,13 @@ esp_err_t audio_opus_stream_start(const audio_opus_stream_config_t *config)
 {
     ESP_RETURN_ON_FALSE(config != NULL && config->send_cb != NULL, ESP_ERR_INVALID_ARG, TAG, "invalid stream config");
     if (s_stream.running) {
+        int requested_rate = config->decoder_output_sample_rate > 0 ? config->decoder_output_sample_rate : AUDIO_OPUS_SAMPLE_RATE;
+        ESP_RETURN_ON_FALSE(requested_rate == s_stream.decoder_output_sample_rate,
+                            ESP_ERR_INVALID_STATE,
+                            TAG,
+                            "cannot change running stream sample_rate old=%d new=%d",
+                            s_stream.decoder_output_sample_rate,
+                            requested_rate);
         s_stream.send_cb = config->send_cb;
         s_stream.user_ctx = config->user_ctx;
         return ESP_OK;
@@ -325,7 +334,7 @@ esp_err_t audio_opus_stream_start(const audio_opus_stream_config_t *config)
     }
 
     const int volume = config->output_volume >= 0 ? config->output_volume : CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_VOLUME;
-    esp_err_t err = open_audio_path(volume);
+    esp_err_t err = open_audio_path(volume, s_stream.decoder_output_sample_rate);
     if (err != ESP_OK) {
         audio_opus_stream_stop();
         return err;
