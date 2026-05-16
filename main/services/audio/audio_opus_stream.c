@@ -530,12 +530,14 @@ esp_err_t audio_opus_stream_feed_pcm(const uint8_t *pcm, size_t len)
     if (sent != pdTRUE) {
         s_stream.uplink_drop_count++;
         ESP_LOGW(TAG,
-                 "uplink pcm drop len=%u uplink drop count=%u free heap=%u minimum free heap=%u",
+                 "uplink pcm backlog drop old frames len=%u uplink drop count=%u free heap=%u minimum free heap=%u",
                  (unsigned int)len,
                  (unsigned int)s_stream.uplink_drop_count,
                  (unsigned int)esp_get_free_heap_size(),
                  (unsigned int)esp_get_minimum_free_heap_size());
-        return ESP_ERR_TIMEOUT;
+        drain_ringbuffer(s_stream.pcm_rb);
+        sent = xRingbufferSend(s_stream.pcm_rb, pcm, len, 0);
+        return sent == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
     }
     return ESP_OK;
 }
