@@ -35,6 +35,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
 static esp_err_t wait_for_ready(uint32_t timeout_ms);
 static void cleanup_websocket_client(void);
 static void handle_websocket_write_failure(const char *stage, int sent, size_t expected_len);
+static void stop_opus_audio_stream(void);
 
 #define XIAOZHI_WS_READY_TIMEOUT_MS 10000
 #define XIAOZHI_WS_READY_POLL_MS 100
@@ -247,10 +248,10 @@ static void stop_session_audio_io(void)
     s_listen_pending = false;
     (void)audio_opus_stream_set_uplink_enabled(false);
     audio_opus_stream_flush();
-    stop_audio_stream();
+    stop_opus_audio_stream();
 }
 
-static void stop_audio_stream(void)
+static void stop_opus_audio_stream(void)
 {
     (void)audio_opus_stream_stop();
 }
@@ -558,7 +559,7 @@ esp_err_t xiaozhi_ws_stop(void)
         return ESP_OK;
     }
 
-    stop_audio_stream();
+    stop_opus_audio_stream();
     cleanup_websocket_client();
 
     ESP_LOGI(TAG, "websocket stopped");
@@ -646,7 +647,7 @@ esp_err_t xiaozhi_ws_trigger_detect_text(const char *text)
     cJSON *root = cJSON_CreateObject();
     if (root == NULL) {
         s_listen_pending = false;
-        stop_audio_stream();
+        stop_opus_audio_stream();
         set_state(XIAOZHI_WS_STATE_READY);
         return ESP_ERR_NO_MEM;
     }
@@ -670,7 +671,7 @@ esp_err_t xiaozhi_ws_trigger_detect_text(const char *text)
 
     if (err != ESP_OK) {
         s_listen_pending = false;
-        stop_audio_stream();
+        stop_opus_audio_stream();
         set_state(XIAOZHI_WS_STATE_READY);
         return err;
     }
@@ -678,7 +679,7 @@ esp_err_t xiaozhi_ws_trigger_detect_text(const char *text)
     err = send_text_json(json, "listen detect");
     if (err != ESP_OK) {
         s_listen_pending = false;
-        stop_audio_stream();
+        stop_opus_audio_stream();
         set_state(XIAOZHI_WS_STATE_READY);
         return err;
     }
