@@ -183,9 +183,9 @@ static void voice_session_task(void *arg)
         switch (evt) {
         case VOICE_SESSION_EVT_TRIGGER_BUTTON: {
             ESP_LOGI(TAG, "SW3 voice trigger detected");
-            esp_err_t err = xiaozhi_ws_trigger_listen(XIAOZHI_WS_LISTEN_MODE_BUTTON);
+            esp_err_t err = xiaozhi_ws_trigger_detect_text("你好，请介绍你自己");
             if (err != ESP_OK) {
-                ESP_LOGW(TAG, "button listen start ignored: %s", esp_err_to_name(err));
+                ESP_LOGW(TAG, "button detect ignored: %s", esp_err_to_name(err));
             }
             break;
         }

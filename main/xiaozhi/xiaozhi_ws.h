@@ -37,6 +37,7 @@ esp_err_t xiaozhi_ws_start(void);
 esp_err_t xiaozhi_ws_stop(void);
 xiaozhi_ws_state_t xiaozhi_ws_get_state(void);
 esp_err_t xiaozhi_ws_trigger_listen(xiaozhi_ws_listen_mode_t mode);
+esp_err_t xiaozhi_ws_trigger_detect_text(const char *text);
 esp_err_t xiaozhi_ws_stop_listen(void);
 esp_err_t xiaozhi_ws_abort_listening(const char *reason);
 esp_err_t xiaozhi_ws_notify_server_hello(const char *json, size_t len);
