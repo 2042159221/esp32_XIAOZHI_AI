@@ -209,7 +209,7 @@ static esp_err_t wait_for_websocket_ready(void)
         }
 
         xiaozhi_ws_state_t state = xiaozhi_ws_get_state();
-        if (state == XIAOZHI_WS_STATE_ERROR || state == XIAOZHI_WS_STATE_DISCONNECTED) {
+        if (state == XIAOZHI_WS_STATE_DISCONNECTED) {
             ESP_LOGE(TAG, "websocket failed before READY state=%d", state);
             return ESP_FAIL;
         }
@@ -225,8 +225,8 @@ static esp_err_t wait_for_websocket_ready(void)
 static void sr_wake_cb(void *user_ctx)
 {
     (void)user_ctx;
-    ESP_LOGI(TAG, "wake detected");
-    esp_err_t err = xiaozhi_ws_trigger_listen(XIAOZHI_WS_LISTEN_MODE_WAKE);
+    ESP_LOGI(TAG, "wake word detected");
+    esp_err_t err = xiaozhi_ws_on_wake_detected();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "wake listen start ignored: %s", esp_err_to_name(err));
     }
@@ -236,13 +236,17 @@ static void sr_vad_state_cb(vad_state_t state, void *user_ctx)
 {
     (void)user_ctx;
     if (state == VAD_SPEECH) {
-        ESP_LOGI(TAG, "VAD speech");
+        ESP_LOGI(TAG, "vad speech");
+        esp_err_t err = xiaozhi_ws_on_vad_state(true);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "vad speech handling failed: %s", esp_err_to_name(err));
+        }
         return;
     }
 
-    ESP_LOGI(TAG, "VAD silence");
+    ESP_LOGI(TAG, "vad silence");
     if (xiaozhi_ws_get_state() == XIAOZHI_WS_STATE_LISTENING) {
-        esp_err_t err = xiaozhi_ws_stop_listen();
+        esp_err_t err = xiaozhi_ws_on_vad_state(false);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "listen stop on VAD silence failed: %s", esp_err_to_name(err));
         }
@@ -252,7 +256,7 @@ static void sr_vad_state_cb(vad_state_t state, void *user_ctx)
 static void sr_pcm_output_cb(const uint8_t *data, size_t len, void *user_ctx)
 {
     (void)user_ctx;
-    esp_err_t err = audio_opus_stream_feed_pcm(data, len);
+    esp_err_t err = xiaozhi_ws_feed_processed_pcm(data, len);
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE && err != ESP_ERR_TIMEOUT) {
         ESP_LOGW(TAG, "feed opus uplink pcm failed: %s", esp_err_to_name(err));
     }

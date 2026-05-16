@@ -86,6 +86,7 @@ typedef struct {
     uint32_t tx_bytes;
     uint32_t rx_frames;
     uint32_t decoded_frames;
+    volatile uint32_t downlink_pending_frames;
     uint32_t playback_failures;
     uint32_t uplink_drop_count;
     uint32_t downlink_drop_count;
@@ -519,6 +520,21 @@ esp_err_t audio_opus_stream_close_decoder(void)
     return ESP_OK;
 }
 
+esp_err_t audio_opus_stream_wait_downlink_idle(uint32_t timeout_ms)
+{
+    const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
+
+    while (s_stream.running && s_stream.downlink_pending_frames > 0) {
+        if (xTaskGetTickCount() >= deadline) {
+            ESP_LOGW(TAG, "downlink drain timeout pending_frames=%u", (unsigned int)s_stream.downlink_pending_frames);
+            return ESP_ERR_TIMEOUT;
+        }
+        vTaskDelay(pdMS_TO_TICKS(AUDIO_OPUS_STREAM_RECV_TIMEOUT_MS));
+    }
+
+    return ESP_OK;
+}
+
 esp_err_t audio_opus_stream_feed_pcm(const uint8_t *pcm, size_t len)
 {
     ESP_RETURN_ON_FALSE(pcm != NULL && len > 0, ESP_ERR_INVALID_ARG, TAG, "invalid uplink pcm");
@@ -563,6 +579,7 @@ esp_err_t audio_opus_stream_enqueue_downlink_opus(const uint8_t *opus, size_t le
     }
 
     s_stream.rx_frames++;
+    s_stream.downlink_pending_frames++;
     if (should_log_frame(s_stream.rx_frames)) {
         ESP_LOGI(TAG,
                  "downlink opus queued frames=%u len=%u free heap=%u minimum free heap=%u",
@@ -770,6 +787,9 @@ static void decoder_task(void *arg)
         }
 
         int write_ret = esp_codec_dev_write(bsp_audio_get_codec(), decoded_frame, (int)decoded_len);
+        if (s_stream.downlink_pending_frames > 0) {
+            s_stream.downlink_pending_frames--;
+        }
         if (write_ret != ESP_CODEC_DEV_OK) {
             s_stream.playback_failures++;
             ESP_LOGW(TAG, "speaker playback failed: %d", write_ret);
