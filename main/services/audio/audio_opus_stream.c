@@ -447,17 +447,6 @@ esp_err_t audio_opus_stream_start(const audio_opus_stream_config_t *config)
         return err;
     }
 
-    if (!lock_codec(pdMS_TO_TICKS(1000))) {
-        audio_opus_stream_stop();
-        return ESP_ERR_TIMEOUT;
-    }
-    err = ensure_encoder_locked();
-    unlock_codec();
-    if (err != ESP_OK) {
-        audio_opus_stream_stop();
-        return err;
-    }
-
     s_stream.pcm_rb = create_stream_ringbuffer(CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_PCM_RING_BYTES);
     s_stream.downlink_rb = create_stream_ringbuffer(CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_OPUS_RING_BYTES);
     if (s_stream.pcm_rb == NULL || s_stream.downlink_rb == NULL) {
