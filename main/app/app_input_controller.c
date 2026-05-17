@@ -14,6 +14,7 @@ static bool s_buttons_registered;
 static app_input_controller_config_t s_config;
 
 static void adc_button_cb(void *button_handle, void *usr_data);
+static void dispatch_sw3_voice_event(app_input_voice_evt_t evt, const char *label);
 static esp_err_t register_adc_button_events(int button_index);
 
 esp_err_t app_input_controller_init(const app_input_controller_config_t *config)
@@ -71,12 +72,30 @@ static void adc_button_cb(void *button_handle, void *usr_data)
     }
 
     if (button_index == BOARD_BUTTON_SW3 && event == BUTTON_SINGLE_CLICK) {
-        ESP_LOGI(TAG, "SW3 voice trigger detected");
-        if (s_config.voice_trigger_cb != NULL) {
-            esp_err_t err = s_config.voice_trigger_cb(s_config.user_ctx);
-            if (err != ESP_OK) {
-                ESP_LOGW(TAG, "voice trigger ignored: %s", esp_err_to_name(err));
-            }
+        dispatch_sw3_voice_event(APP_INPUT_VOICE_EVT_TEXT_TEST, "single click");
+    } else if (button_index == BOARD_BUTTON_SW3 && event == BUTTON_LONG_PRESS_START) {
+        dispatch_sw3_voice_event(APP_INPUT_VOICE_EVT_LISTEN_START, "long press start");
+    } else if (button_index == BOARD_BUTTON_SW3 && event == BUTTON_LONG_PRESS_UP) {
+        dispatch_sw3_voice_event(APP_INPUT_VOICE_EVT_LISTEN_STOP, "long press release");
+    }
+}
+
+static void dispatch_sw3_voice_event(app_input_voice_evt_t evt, const char *label)
+{
+    ESP_LOGI(TAG, "SW3 %s voice event=%d detected", label, evt);
+
+    if (s_config.voice_event_cb != NULL) {
+        esp_err_t err = s_config.voice_event_cb(evt, s_config.user_ctx);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "voice event ignored: %s", esp_err_to_name(err));
+        }
+        return;
+    }
+
+    if (evt == APP_INPUT_VOICE_EVT_TEXT_TEST && s_config.voice_trigger_cb != NULL) {
+        esp_err_t err = s_config.voice_trigger_cb(s_config.user_ctx);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "voice trigger ignored: %s", esp_err_to_name(err));
         }
     }
 }

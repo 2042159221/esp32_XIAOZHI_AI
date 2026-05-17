@@ -22,6 +22,8 @@ static const char *TAG = "app_controller";
 
 typedef enum {
     VOICE_SESSION_EVT_TEXT_TEST = 0,
+    VOICE_SESSION_EVT_LISTEN_START,
+    VOICE_SESSION_EVT_LISTEN_STOP,
 } voice_session_evt_t;
 
 static QueueHandle_t s_voice_evt_queue;
@@ -47,6 +49,7 @@ static void provisioning_state_cb(provisioning_service_state_t state, void *user
 static void provisioning_qrcode_cb(const char *payload, void *user_ctx);
 static esp_err_t reset_provisioning_cb(void *user_ctx);
 static esp_err_t voice_trigger_cb(void *user_ctx);
+static esp_err_t voice_event_cb(app_input_voice_evt_t input_evt, void *user_ctx);
 static void voice_session_task(void *arg);
 
 esp_err_t app_controller_start(void)
@@ -54,6 +57,7 @@ esp_err_t app_controller_start(void)
     const app_input_controller_config_t input_config = {
         .reset_provisioning_cb = reset_provisioning_cb,
         .voice_trigger_cb = voice_trigger_cb,
+        .voice_event_cb = voice_event_cb,
         .user_ctx = NULL,
     };
     ESP_RETURN_ON_ERROR(app_input_controller_init(&input_config), TAG, "init input controller failed");
@@ -138,13 +142,43 @@ static esp_err_t reset_provisioning_cb(void *user_ctx)
 static esp_err_t voice_trigger_cb(void *user_ctx)
 {
     (void)user_ctx;
-    ESP_LOGI(TAG, "button voice trigger queued");
+    ESP_LOGI(TAG, "button voice text test queued");
     if (s_voice_evt_queue == NULL) {
         ESP_LOGW(TAG, "voice trigger ignored before voice session is ready");
         return ESP_OK;
     }
 
     const voice_session_evt_t evt = VOICE_SESSION_EVT_TEXT_TEST;
+    BaseType_t sent = xQueueSend(s_voice_evt_queue, &evt, 0);
+    return sent == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+static esp_err_t voice_event_cb(app_input_voice_evt_t input_evt, void *user_ctx)
+{
+    (void)user_ctx;
+    voice_session_evt_t evt;
+
+    switch (input_evt) {
+    case APP_INPUT_VOICE_EVT_TEXT_TEST:
+        evt = VOICE_SESSION_EVT_TEXT_TEST;
+        break;
+    case APP_INPUT_VOICE_EVT_LISTEN_START:
+        evt = VOICE_SESSION_EVT_LISTEN_START;
+        break;
+    case APP_INPUT_VOICE_EVT_LISTEN_STOP:
+        evt = VOICE_SESSION_EVT_LISTEN_STOP;
+        break;
+    default:
+        ESP_LOGW(TAG, "unknown input voice event=%d", input_evt);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    ESP_LOGI(TAG, "button voice event queued=%d", evt);
+    if (s_voice_evt_queue == NULL) {
+        ESP_LOGW(TAG, "voice event ignored before voice session is ready");
+        return ESP_OK;
+    }
+
     BaseType_t sent = xQueueSend(s_voice_evt_queue, &evt, 0);
     return sent == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
 }
@@ -187,6 +221,22 @@ static void voice_session_task(void *arg)
             esp_err_t err = xiaozhi_ws_trigger_detect_text(XIAOZHI_P0_TEXT_TEST);
             if (err != ESP_OK) {
                 ESP_LOGW(TAG, "button detect ignored: %s", esp_err_to_name(err));
+            }
+            break;
+        }
+        case VOICE_SESSION_EVT_LISTEN_START: {
+            ESP_LOGI(TAG, "SW3 manual listen start event");
+            esp_err_t err = xiaozhi_ws_trigger_listen(XIAOZHI_WS_LISTEN_MODE_BUTTON);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "manual listen start ignored: %s", esp_err_to_name(err));
+            }
+            break;
+        }
+        case VOICE_SESSION_EVT_LISTEN_STOP: {
+            ESP_LOGI(TAG, "SW3 manual listen stop event");
+            esp_err_t err = xiaozhi_ws_stop_listen();
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "manual listen stop failed: %s", esp_err_to_name(err));
             }
             break;
         }
