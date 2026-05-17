@@ -7,6 +7,7 @@
 
 #include "audio_opus_codec.h"
 #include "audio_opus_stream.h"
+#include "bsp_audio.h"
 #include "cJSON.h"
 #include "esp_check.h"
 #include "esp_crt_bundle.h"
@@ -39,6 +40,8 @@ static void handle_websocket_write_failure(const char *stage, int sent, size_t e
 static void stop_opus_audio_stream(void);
 static esp_err_t ensure_websocket_ready(void);
 static esp_err_t send_listen_state(const char *state, const char *mode);
+static esp_err_t start_audio_stream_with_rate(audio_opus_pcm_source_t pcm_source, int decoder_output_sample_rate);
+static esp_err_t restore_downlink_audio_stream(audio_opus_pcm_source_t pcm_source);
 static void reset_session_flags(void);
 
 #define XIAOZHI_WS_READY_TIMEOUT_MS 10000
@@ -282,6 +285,45 @@ static esp_err_t start_audio_stream(audio_opus_pcm_source_t pcm_source)
     };
     esp_err_t err = audio_opus_stream_start(&config);
     return err;
+}
+
+static esp_err_t start_audio_stream_with_rate(audio_opus_pcm_source_t pcm_source, int decoder_output_sample_rate)
+{
+    const audio_opus_stream_config_t config = {
+        .send_cb = send_opus_frame,
+        .user_ctx = NULL,
+        .output_volume = -1,
+        .pcm_source = pcm_source,
+        .decoder_output_sample_rate = decoder_output_sample_rate,
+    };
+    return audio_opus_stream_start(&config);
+}
+
+static esp_err_t restore_downlink_audio_stream(audio_opus_pcm_source_t pcm_source)
+{
+    ESP_RETURN_ON_FALSE(pcm_source == AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED,
+                        ESP_ERR_INVALID_ARG,
+                        TAG,
+                        "invalid downlink restore pcm_source=%d",
+                        pcm_source);
+    const int playback_sample_rate = resolve_decoder_output_sample_rate();
+    ESP_LOGI(TAG,
+             "manual listen restore audio path current_sample_rate=%d target_sample_rate=%d",
+             bsp_audio_get_current_sample_rate(),
+             playback_sample_rate);
+
+    stop_opus_audio_stream();
+    ESP_RETURN_ON_ERROR(bsp_audio_open_with_sample_rate(playback_sample_rate), TAG, "restore downlink audio path failed");
+
+    esp_err_t err = start_audio_stream(pcm_source);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "restore downlink opus stream failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    (void)audio_opus_stream_set_uplink_enabled(false);
+    audio_opus_stream_flush();
+    return ESP_OK;
 }
 
 static void stop_session_audio_io(void)
@@ -652,8 +694,84 @@ static esp_err_t wait_for_ready(uint32_t timeout_ms)
 
 esp_err_t xiaozhi_ws_trigger_listen(xiaozhi_ws_listen_mode_t mode)
 {
-    (void)mode;
-    return xiaozhi_ws_on_wake_detected();
+    if (mode != XIAOZHI_WS_LISTEN_MODE_BUTTON) {
+        esp_err_t err = xiaozhi_ws_on_wake_detected();
+        return err;
+    }
+
+    if (s_ws_state == XIAOZHI_WS_STATE_LISTENING) {
+        ESP_LOGI(TAG, "manual listen start ignored because already listening");
+        return ESP_OK;
+    }
+
+    if (s_ws_state == XIAOZHI_WS_STATE_SPEAKING || s_waiting_tts_stop) {
+        ESP_LOGW(TAG,
+                 "manual listen start ignored while TTS is active state=%s waiting_tts_stop=%d",
+                 state_name(s_ws_state),
+                 s_waiting_tts_stop);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t err = ensure_websocket_ready();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "manual listen start websocket not ready: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    if (s_session_id[0] == '\0') {
+        ESP_LOGW(TAG, "manual listen start ignored because session_id is missing");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (s_ws_state != XIAOZHI_WS_STATE_READY && s_ws_state != XIAOZHI_WS_STATE_WAKE_DETECTED) {
+        ESP_LOGW(TAG, "manual listen start invalid state=%s", state_name(s_ws_state));
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    (void)audio_opus_stream_set_uplink_enabled(false);
+    (void)audio_opus_stream_wait_downlink_idle(XIAOZHI_WS_DOWNLINK_DRAIN_TIMEOUT_MS);
+    audio_opus_stream_flush();
+    stop_opus_audio_stream();
+
+    ESP_LOGI(TAG,
+             "manual listen switch audio path current_sample_rate=%d target_sample_rate=%d",
+             bsp_audio_get_current_sample_rate(),
+             AUDIO_OPUS_SAMPLE_RATE);
+    err = bsp_audio_open_with_sample_rate(AUDIO_OPUS_SAMPLE_RATE);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "switch audio path for manual capture failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = start_audio_stream_with_rate(AUDIO_OPUS_PCM_SOURCE_DIRECT_CODEC, AUDIO_OPUS_SAMPLE_RATE);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "start manual direct codec stream failed: %s", esp_err_to_name(err));
+        (void)restore_downlink_audio_stream(AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED);
+        return err;
+    }
+
+    err = send_listen_state("start", "manual");
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "manual listen start send failed: %s", esp_err_to_name(err));
+        (void)audio_opus_stream_set_uplink_enabled(false);
+        audio_opus_stream_flush();
+        (void)restore_downlink_audio_stream(AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED);
+        return err;
+    }
+
+    err = audio_opus_stream_set_uplink_enabled(true);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "manual listen uplink enable failed: %s", esp_err_to_name(err));
+        (void)send_listen_state("stop", "manual");
+        (void)restore_downlink_audio_stream(AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED);
+        return err;
+    }
+
+    s_next_opus_send_tick = 0;
+    set_state(XIAOZHI_WS_STATE_LISTENING);
+    log_heap_stats("listen start manual");
+    audio_opus_stream_log_watermarks("listen start manual");
+    return ESP_OK;
 }
 
 static esp_err_t ensure_websocket_ready(void)
@@ -704,7 +822,7 @@ static esp_err_t send_listen_state(const char *state, const char *mode)
 
     err = send_text_json(json, "listen");
     if (err == ESP_OK && strcmp(state, "start") == 0) {
-        ESP_LOGI(TAG, "wake word detected");
+        ESP_LOGI(TAG, "listen start mode=%s", (mode != NULL && mode[0] != '\0') ? mode : "manual");
     }
     return err;
 }
@@ -824,8 +942,20 @@ esp_err_t xiaozhi_ws_stop_listen(void)
     char *json = NULL;
     ESP_RETURN_ON_ERROR(xiaozhi_protocol_build_listen_stop_json(s_session_id, &json), TAG, "build listen stop failed");
     esp_err_t err = send_text_json(json, "listen stop");
-    set_state(err == ESP_OK ? XIAOZHI_WS_STATE_WAITING_RESPONSE : XIAOZHI_WS_STATE_DISCONNECTED);
-    return err;
+    const audio_opus_pcm_source_t restore_source = AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED;
+    esp_err_t restore_err = restore_downlink_audio_stream(restore_source);
+    if (err == ESP_OK && restore_err == ESP_OK) {
+        set_state(XIAOZHI_WS_STATE_WAITING_RESPONSE);
+        log_heap_stats("listen stop manual");
+        audio_opus_stream_log_watermarks("listen stop manual");
+        return ESP_OK;
+    }
+
+    if (restore_err != ESP_OK) {
+        ESP_LOGE(TAG, "restore downlink after listen stop failed: %s", esp_err_to_name(restore_err));
+    }
+    set_state(XIAOZHI_WS_STATE_DISCONNECTED);
+    return err != ESP_OK ? err : restore_err;
 }
 
 esp_err_t xiaozhi_ws_abort_listening(const char *reason)
