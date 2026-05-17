@@ -85,6 +85,7 @@ def check_manual_listen_state_machine(failures: list[str]) -> None:
     ws_source = read("main/xiaozhi/xiaozhi_ws.c")
     trigger_body = function_body(ws_source, "xiaozhi_ws_trigger_listen")
     stop_body = function_body(ws_source, "xiaozhi_ws_stop_listen")
+    hello_body = function_body(ws_source, "handle_server_hello")
     start_audio_body = function_body(ws_source, "start_audio_stream")
 
     require("return xiaozhi_ws_on_wake_detected()" not in trigger_body,
@@ -110,6 +111,16 @@ def check_manual_listen_state_machine(failures: list[str]) -> None:
                    "audio_opus_stream_set_uplink_enabled(true)",
                    "manual listen start must enter LISTENING before enabling uplink to avoid dropping early Opus frames",
                    failures)
+    require("s_pending_ptt" in ws_source and "s_button_down" in ws_source,
+            "manual listen must track pending_ptt and button_down separately", failures)
+    require("s_button_down = true" in trigger_body and "s_pending_ptt = true" in trigger_body,
+            "SW3 long press before READY must remember button_down and pending_ptt", failures)
+    require("wait_for_ready(" not in trigger_body and "ensure_websocket_ready()" not in trigger_body,
+            "manual listen start must not block waiting for WebSocket READY", failures)
+    require("start_pending_ptt_if_ready" in hello_body,
+            "WebSocket READY callback must continue a pending PTT only after server hello", failures)
+    require("s_button_down = false" in stop_body and "s_pending_ptt = false" in stop_body,
+            "SW3 release before LISTENING must cancel pending PTT without sending listen stop", failures)
 
     require("audio_opus_stream_set_uplink_enabled(false)" in stop_body,
             "listen stop must disable uplink immediately", failures)
@@ -123,6 +134,39 @@ def check_manual_listen_state_machine(failures: list[str]) -> None:
             "listen stop must enter WAITING_RESPONSE when the stop payload is sent", failures)
     require("decoder_output_sample_rate = resolve_decoder_output_sample_rate()" in start_audio_body,
             "downlink decoder sample rate must continue to follow server hello", failures)
+
+
+def check_waiting_response_recovery(failures: list[str]) -> None:
+    ws_header = read("main/xiaozhi/xiaozhi_ws.h")
+    ws_source = read("main/xiaozhi/xiaozhi_ws.c")
+    stream_header = read("main/services/audio/audio_opus_stream.h")
+    stream_source = read("main/services/audio/audio_opus_stream.c")
+    stop_body = function_body(ws_source, "xiaozhi_ws_stop_listen")
+    detect_body = function_body(ws_source, "xiaozhi_ws_trigger_detect_text")
+    timeout_body = function_body(ws_source, "waiting_response_timeout_cb")
+
+    require("XIAOZHI_WS_RESPONSE_TIMEOUT_MS" in ws_source and "XIAOZHI_WS_SHORT_RESPONSE_TIMEOUT_MS" in ws_source,
+            "WAITING_RESPONSE must have normal and short recovery timeouts", failures)
+    require("xTimerCreate" in ws_source and "waiting_response_timeout_cb" in ws_source,
+            "WAITING_RESPONSE recovery must use a FreeRTOS one-shot timer", failures)
+    require("set_waiting_response" in stop_body and "set_waiting_response" in detect_body,
+            "listen stop and P0 detect text must enter WAITING_RESPONSE through the timeout helper", failures)
+    require("audio_opus_stream_get_stats" in stop_body,
+            "listen stop must inspect uplink tx stats before choosing the response timeout", failures)
+    require("XIAOZHI_WS_MIN_LISTEN_TX_FRAMES" in stop_body and "XIAOZHI_WS_MIN_LISTEN_MS" in stop_body,
+            "listen stop must apply the minimum recording protection", failures)
+    require("tx_frames" in timeout_body and "tx_bytes" in timeout_body and "last_state" in timeout_body,
+            "WAITING_RESPONSE timeout log must include tx_frames, tx_bytes, and last_state", failures)
+    require("set_state(XIAOZHI_WS_STATE_READY)" in timeout_body,
+            "WAITING_RESPONSE timeout must recover to READY", failures)
+    require("note_waiting_response_activity" in ws_source,
+            "server response activity must refresh or cancel WAITING_RESPONSE timeout", failures)
+    require("audio_opus_stream_stats_t" in stream_header and "audio_opus_stream_get_stats" in stream_header,
+            "audio_opus_stream must expose tx stats for state-machine recovery diagnostics", failures)
+    require("audio_opus_stream_get_stats" in stream_source and "tx_bytes" in stream_source,
+            "audio_opus_stream.c must implement tx stats access", failures)
+    require("xiaozhi_ws_request_ready" in ws_header and "wait_for_ready(" not in detect_body,
+            "P0 detect text request must not block app_controller waiting for WebSocket READY", failures)
 
 
 def check_pcm_diagnostics_and_sample_contract(failures: list[str]) -> None:
@@ -200,6 +244,7 @@ def main() -> int:
     failures: list[str] = []
     check_sw3_long_press_events(failures)
     check_manual_listen_state_machine(failures)
+    check_waiting_response_recovery(failures)
     check_pcm_diagnostics_and_sample_contract(failures)
     check_p1_quality_fixes(failures)
     check_sr_auto_init_disabled(failures)
