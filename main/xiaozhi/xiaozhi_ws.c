@@ -838,6 +838,12 @@ esp_err_t xiaozhi_ws_trigger_listen(xiaozhi_ws_listen_mode_t mode)
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (s_ws_state == XIAOZHI_WS_STATE_WAITING_RESPONSE) {
+        s_pending_ptt = false;
+        ESP_LOGW(TAG, "manual listen start ignored while waiting response");
+        return ESP_ERR_INVALID_STATE;
+    }
+
     if (s_ws_state == XIAOZHI_WS_STATE_READY || s_ws_state == XIAOZHI_WS_STATE_WAKE_DETECTED) {
         s_pending_ptt = false;
         return start_manual_listen_now();

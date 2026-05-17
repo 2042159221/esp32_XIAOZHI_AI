@@ -103,6 +103,8 @@ def check_manual_listen_state_machine(failures: list[str]) -> None:
             "manual listen start must drain downlink before switching the shared audio path", failures)
     require("XIAOZHI_WS_STATE_SPEAKING" in trigger_body and "s_waiting_tts_stop" in trigger_body,
             "manual listen start must ignore requests while TTS is speaking or waiting for TTS stop", failures)
+    require("XIAOZHI_WS_STATE_WAITING_RESPONSE" in trigger_body,
+            "manual listen start must not create stale pending PTT while waiting for response", failures)
     require("XIAOZHI_WS_STATE_LISTENING" in start_body,
             "manual listen start must enter LISTENING after enabling uplink", failures)
     require("audio_opus_stream_set_uplink_enabled(true)" in start_body,
