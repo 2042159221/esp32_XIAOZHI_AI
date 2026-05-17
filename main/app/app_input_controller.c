@@ -43,7 +43,6 @@ static esp_err_t register_adc_button_events(int button_index)
     ESP_RETURN_ON_ERROR(bsp_button_register_cb(button_index, BUTTON_SINGLE_CLICK, adc_button_cb, (void *)(intptr_t)button_index), TAG, "register single click failed");
     ESP_RETURN_ON_ERROR(bsp_button_register_cb(button_index, BUTTON_DOUBLE_CLICK, adc_button_cb, (void *)(intptr_t)button_index), TAG, "register double click failed");
     ESP_RETURN_ON_ERROR(bsp_button_register_cb(button_index, BUTTON_LONG_PRESS_START, adc_button_cb, (void *)(intptr_t)button_index), TAG, "register long press start failed");
-    ESP_RETURN_ON_ERROR(bsp_button_register_cb(button_index, BUTTON_LONG_PRESS_HOLD, adc_button_cb, (void *)(intptr_t)button_index), TAG, "register long press hold failed");
     ESP_RETURN_ON_ERROR(bsp_button_register_cb(button_index, BUTTON_LONG_PRESS_UP, adc_button_cb, (void *)(intptr_t)button_index), TAG, "register long press up failed");
 
     return ESP_OK;
