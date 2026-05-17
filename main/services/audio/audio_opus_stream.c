@@ -299,6 +299,35 @@ static void close_decoder_locked(void)
     audio_opus_decoder_close(&s_stream.decoder);
 }
 
+static unsigned int task_watermark(TaskHandle_t task)
+{
+    return task != NULL ? (unsigned int)uxTaskGetStackHighWaterMark(task) : 0;
+}
+
+void audio_opus_stream_log_watermarks(const char *label)
+{
+    const char *name = (label != NULL && label[0] != '\0') ? label : "audio_opus_stream";
+    ESP_LOGI(TAG,
+             "%s runtime: running=%d uplink=%d pending_downlink=%u tx_frames=%u rx_frames=%u decoded_frames=%u playback_failures=%u uplink_drops=%u downlink_drops=%u internal_free=%u internal_largest=%u spiram_free=%u spiram_largest=%u encoder_stack=%u decoder_stack=%u capture_stack=%u",
+             name,
+             s_stream.running,
+             s_stream.uplink_enabled,
+             (unsigned int)s_stream.downlink_pending_frames,
+             (unsigned int)s_stream.tx_frames,
+             (unsigned int)s_stream.rx_frames,
+             (unsigned int)s_stream.decoded_frames,
+             (unsigned int)s_stream.playback_failures,
+             (unsigned int)s_stream.uplink_drop_count,
+             (unsigned int)s_stream.downlink_drop_count,
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+             task_watermark(s_stream.encoder_task),
+             task_watermark(s_stream.decoder_task),
+             task_watermark(s_stream.capture_task));
+}
+
 esp_err_t audio_opus_stream_start(const audio_opus_stream_config_t *config)
 {
     ESP_RETURN_ON_FALSE(config != NULL && config->send_cb != NULL, ESP_ERR_INVALID_ARG, TAG, "invalid stream config");
@@ -413,6 +442,7 @@ esp_err_t audio_opus_stream_start(const audio_opus_stream_config_t *config)
              (unsigned int)CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_OPUS_RING_BYTES,
              (unsigned int)esp_get_free_heap_size(),
              (unsigned int)esp_get_minimum_free_heap_size());
+    audio_opus_stream_log_watermarks("Opus stream started");
     return ESP_OK;
 }
 

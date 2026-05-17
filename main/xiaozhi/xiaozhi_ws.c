@@ -271,7 +271,11 @@ static esp_err_t start_audio_stream(audio_opus_pcm_source_t pcm_source)
         .pcm_source = pcm_source,
         .decoder_output_sample_rate = resolve_decoder_output_sample_rate(),
     };
-    return audio_opus_stream_start(&config);
+    esp_err_t err = audio_opus_stream_start(&config);
+    if (err == ESP_OK) {
+        audio_opus_stream_log_watermarks("Opus stream started");
+    }
+    return err;
 }
 
 static void stop_session_audio_io(void)
@@ -364,6 +368,8 @@ static void handle_server_hello(const xiaozhi_protocol_msg_t *msg)
     audio_opus_stream_flush();
 
     set_state(XIAOZHI_WS_STATE_READY);
+    log_heap_stats("WS READY");
+    audio_opus_stream_log_watermarks("WS READY");
 }
 
 static void handle_tts(const xiaozhi_protocol_msg_t *msg)
@@ -373,6 +379,8 @@ static void handle_tts(const xiaozhi_protocol_msg_t *msg)
         s_waiting_tts_stop = true;
         (void)audio_opus_stream_set_uplink_enabled(false);
         set_state(XIAOZHI_WS_STATE_SPEAKING);
+        log_heap_stats("TTS start");
+        audio_opus_stream_log_watermarks("TTS start");
         return;
     }
 
@@ -384,6 +392,8 @@ static void handle_tts(const xiaozhi_protocol_msg_t *msg)
         s_waiting_tts_stop = false;
         set_state(XIAOZHI_WS_STATE_READY);
         ESP_LOGI(TAG, "tts stop -> READY");
+        log_heap_stats("TTS stop");
+        audio_opus_stream_log_watermarks("TTS stop");
         return;
     }
 
@@ -444,6 +454,8 @@ static void handle_binary_opus(const uint8_t *data, size_t len)
     esp_err_t err = audio_opus_stream_enqueue_downlink_opus(data, len);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "enqueue downlink opus failed: %s", esp_err_to_name(err));
+    } else {
+        audio_opus_stream_log_watermarks("binary opus");
     }
 }
 

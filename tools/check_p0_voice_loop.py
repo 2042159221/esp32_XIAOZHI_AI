@@ -188,6 +188,25 @@ def check_ws_state_machine(failures: list[str]) -> None:
             "disconnect/error paths must stop audio stream through stop_session_audio_io", failures)
 
 
+def check_runtime_diagnostics(failures: list[str]) -> None:
+    stream_header = read("main/services/audio/audio_opus_stream.h")
+    stream_source = read("main/services/audio/audio_opus_stream.c")
+    ws_source = read("main/xiaozhi/xiaozhi_ws.c")
+
+    require("audio_opus_stream_log_watermarks" in stream_header,
+            "audio_opus_stream.h must expose audio_opus_stream_log_watermarks", failures)
+    require("uxTaskGetStackHighWaterMark" in stream_source,
+            "audio_opus_stream.c must log task stack watermarks", failures)
+    for label in (
+        "WS READY",
+        "Opus stream started",
+        "TTS start",
+        "TTS stop",
+        "binary opus",
+    ):
+        require(label in ws_source, f"xiaozhi_ws.c must log diagnostics label {label}", failures)
+
+
 def main() -> int:
     failures: list[str] = []
     check_sdkconfig_defaults(failures)
@@ -197,6 +216,7 @@ def main() -> int:
     check_detect_text_request(failures)
     check_ws_state_machine(failures)
     check_voice_session_task(failures)
+    check_runtime_diagnostics(failures)
 
     if failures:
         print("P0 voice loop guardrails failed:")

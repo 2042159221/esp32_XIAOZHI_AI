@@ -35,6 +35,7 @@ esp_err_t audio_opus_stream_wait_downlink_idle(uint32_t timeout_ms);
 esp_err_t audio_opus_stream_feed_pcm(const uint8_t *pcm, size_t len);
 esp_err_t audio_opus_stream_enqueue_downlink_opus(const uint8_t *opus, size_t len);
 void audio_opus_stream_flush(void);
+void audio_opus_stream_log_watermarks(const char *label);
 
 #ifdef __cplusplus
 }
