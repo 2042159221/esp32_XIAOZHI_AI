@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "sdkconfig.h"
 
 static const char *TAG = "bsp_audio";
 
@@ -444,7 +445,14 @@ static esp_err_t bsp_audio_open_with_sample_rate_locked(int sample_rate)
 
     s_codec_opened = true;
     s_current_sample_rate = sample_rate;
-    ESP_LOGI(TAG, "codec opened sample_rate=%d channels=%d bits=%d", sample_rate, BSP_AUDIO_CHANNELS, BSP_AUDIO_BITS_PER_SAMPLE);
+    ret = esp_codec_dev_set_in_gain(s_codec, (float)CONFIG_XIAOZHI_AUDIO_MIC_GAIN_DB);
+    ESP_RETURN_ON_FALSE(ret == ESP_CODEC_DEV_OK, ESP_FAIL, TAG, "set microphone gain=%d dB failed: %d", CONFIG_XIAOZHI_AUDIO_MIC_GAIN_DB, ret);
+    ESP_LOGI(TAG,
+             "codec opened sample_rate=%d channels=%d bits=%d mic_gain_db=%d",
+             sample_rate,
+             BSP_AUDIO_CHANNELS,
+             BSP_AUDIO_BITS_PER_SAMPLE,
+             CONFIG_XIAOZHI_AUDIO_MIC_GAIN_DB);
     return ESP_OK;
 }
 

@@ -133,6 +133,15 @@ menu "Xiaozhi Agent Stage1 Configuration"
             tone playback or local loopback automatically; callers must invoke
             the diagnostic functions explicitly.
 
+    config XIAOZHI_AUDIO_MIC_GAIN_DB
+        int "ES8311 microphone input gain (dB)"
+        default 30
+        range 0 42
+        help
+            Analog microphone gain applied through esp_codec_dev_set_in_gain()
+            after opening the ES8311 codec. Increase if direct capture PCM RMS
+            is too low; reduce if clip_samples increases or peaks saturate.
+
     config XIAOZHI_AUDIO_DIAG_TONE_MS
         int "Audio diagnostics 1 kHz tone duration (ms)"
         depends on XIAOZHI_AUDIO_DIAG_ENABLE
