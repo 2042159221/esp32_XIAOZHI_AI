@@ -12,6 +12,7 @@
 #include "esp_prov_adapter.h"
 #include "esp_prov_strategy.h"
 #include "esp_system.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
@@ -71,6 +72,8 @@ static void provisioning_finalize_task(void *arg);
 static void finish_provisioning_stop(void);
 static void on_wifi_got_ip(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static void log_heap_state(const char *stage);
+static const char *provisioning_state_name(provisioning_service_state_t state);
+static void stop_residual_wifi_scan(const char *stage);
 static bool lifecycle_ready_to_start_business(void);
 static void maybe_start_business_after_provisioning(void);
 static void set_state(provisioning_service_state_t state);
@@ -129,8 +132,10 @@ esp_err_t provisioning_service_start(const provisioning_service_config_t *config
             xEventGroupSetBits(s_lifecycle_event_group, WIFI_GOT_IP_BIT);
 
             log_heap_state("before provisioning stop/deinit");
+            stop_residual_wifi_scan("saved wifi before provisioning deinit");
             esp_prov_adapter_deinit();
             s_prov_deinited = true;
+            ESP_LOGI(TAG, "provisioning deinit complete path=saved_wifi");
             xEventGroupSetBits(s_lifecycle_event_group, PROV_STOPPED_BIT);
             ESP_LOGI(TAG, "PROV_STOPPED_BIT set, PROV_DEINITED=1");
             log_heap_state("after provisioning stopped/deinit");
@@ -271,6 +276,7 @@ static void request_provisioning_stop_now(void)
     log_heap_state("before provisioning stop");
     ESP_LOGI(TAG, "app requested provisioning stop before business start");
     esp_prov_adapter_stop_provisioning();
+    stop_residual_wifi_scan("after provisioning stop request");
     schedule_provisioning_finalize();
 }
 
@@ -318,8 +324,12 @@ static void provisioning_finalize_task(void *arg)
 static void finish_provisioning_stop(void)
 {
     if (!s_prov_deinited) {
+        stop_residual_wifi_scan("before provisioning deinit");
         esp_prov_adapter_deinit();
         s_prov_deinited = true;
+        ESP_LOGI(TAG, "provisioning deinit complete path=finalize");
+    } else {
+        ESP_LOGI(TAG, "provisioning deinit complete path=already_deinited");
     }
 
     if (s_lifecycle_event_group != NULL) {
@@ -373,6 +383,44 @@ static void log_heap_state(const char *stage)
              (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 }
 
+static const char *provisioning_state_name(provisioning_service_state_t state)
+{
+    switch (state) {
+    case PROVISIONING_SERVICE_STATE_UNPROVISIONED:
+        return "UNPROVISIONED";
+    case PROVISIONING_SERVICE_STATE_PROVISIONING:
+        return "PROVISIONING";
+    case PROVISIONING_SERVICE_STATE_CRED_RECEIVED:
+        return "CRED_RECEIVED";
+    case PROVISIONING_SERVICE_STATE_CONNECTING:
+        return "CONNECTING";
+    case PROVISIONING_SERVICE_STATE_CONNECTED:
+        return "CONNECTED";
+    case PROVISIONING_SERVICE_STATE_FAILED:
+        return "FAILED";
+    case PROVISIONING_SERVICE_STATE_BUSINESS_STARTED:
+        return "BUSINESS_STARTED";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void stop_residual_wifi_scan(const char *stage)
+{
+    esp_err_t err = esp_wifi_scan_stop();
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "residual Wi-Fi scan stopped stage=%s", stage != NULL ? stage : "<unknown>");
+        return;
+    }
+
+    if (err == ESP_ERR_WIFI_NOT_INIT || err == ESP_ERR_WIFI_NOT_STARTED || err == ESP_ERR_WIFI_STATE) {
+        ESP_LOGD(TAG, "no residual Wi-Fi scan to stop stage=%s err=%s", stage != NULL ? stage : "<unknown>", esp_err_to_name(err));
+        return;
+    }
+
+    ESP_LOGW(TAG, "stop residual Wi-Fi scan failed stage=%s err=%s", stage != NULL ? stage : "<unknown>", esp_err_to_name(err));
+}
+
 static bool lifecycle_ready_to_start_business(void)
 {
     if (s_lifecycle_event_group == NULL || !s_prov_deinited) {
@@ -404,6 +452,12 @@ static void maybe_start_business_after_provisioning(void)
     }
 
     s_start_business_after_stop = false;
+    EventBits_t bits = xEventGroupGetBits(s_lifecycle_event_group);
+    ESP_LOGI(TAG,
+             "business start gate passed: got_ip=%d prov_stopped=%d prov_deinited=%d",
+             (bits & WIFI_GOT_IP_BIT) != 0,
+             (bits & PROV_STOPPED_BIT) != 0,
+             s_prov_deinited);
     start_business();
 }
 
@@ -414,11 +468,13 @@ static void provisioning_event_cb(void *user_data, wifi_prov_cb_event_t event, v
 
     switch (event) {
     case WIFI_PROV_CRED_RECV:
+        ESP_LOGI(TAG, "WIFI_PROV_CRED_RECV");
         set_state(PROVISIONING_SERVICE_STATE_CRED_RECEIVED);
         set_state(PROVISIONING_SERVICE_STATE_CONNECTING);
         break;
 
     case WIFI_PROV_CRED_FAIL:
+        ESP_LOGW(TAG, "WIFI_PROV_CRED_FAIL");
         set_state(PROVISIONING_SERVICE_STATE_FAILED);
         ESP_LOGW(TAG, "wifi provisioning credential failed");
         s_restart_provisioning_after_stop = true;
@@ -427,6 +483,7 @@ static void provisioning_event_cb(void *user_data, wifi_prov_cb_event_t event, v
         break;
 
     case WIFI_PROV_CRED_SUCCESS:
+        ESP_LOGI(TAG, "WIFI_PROV_CRED_SUCCESS");
         set_state(PROVISIONING_SERVICE_STATE_CONNECTED);
         s_start_business_after_stop = true;
         if (wifi_sta_service_is_connected() && s_lifecycle_event_group != NULL) {
@@ -436,6 +493,7 @@ static void provisioning_event_cb(void *user_data, wifi_prov_cb_event_t event, v
         break;
 
     case WIFI_PROV_END:
+        ESP_LOGI(TAG, "WIFI_PROV_END");
         schedule_provisioning_finalize();
         break;
 
@@ -446,6 +504,12 @@ static void provisioning_event_cb(void *user_data, wifi_prov_cb_event_t event, v
 
 static void set_state(provisioning_service_state_t state)
 {
+    if (s_current_state != state) {
+        ESP_LOGI(TAG,
+                 "provisioning state %s -> %s",
+                 provisioning_state_name(s_current_state),
+                 provisioning_state_name(state));
+    }
     s_current_state = state;
     if (s_service_config.state_cb != NULL) {
         s_service_config.state_cb(state, s_service_config.user_ctx);
