@@ -30,6 +30,7 @@ static xiaozhi_protocol_audio_params_t s_server_audio;
 static TickType_t s_next_opus_send_tick;
 static bool s_reconnect_in_progress;
 static bool s_waiting_tts_stop;
+static uint32_t s_binary_opus_diagnostics_frames;
 
 static void websocket_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
 static esp_err_t wait_for_ready(uint32_t timeout_ms);
@@ -45,6 +46,7 @@ static void reset_session_flags(void);
 #define XIAOZHI_WS_OPUS_SEND_INTERVAL_MS XIAOZHI_PROTOCOL_AUDIO_FRAME_DURATION_MS
 #define XIAOZHI_WS_OPUS_SEND_TIMEOUT_MS 1000
 #define XIAOZHI_WS_DOWNLINK_DRAIN_TIMEOUT_MS 1200
+#define XIAOZHI_WS_BINARY_OPUS_DIAGNOSTIC_INTERVAL 16
 
 static const char *state_name(xiaozhi_ws_state_t state)
 {
@@ -88,6 +90,13 @@ static void reset_session_flags(void)
 {
     s_waiting_tts_stop = false;
     s_next_opus_send_tick = 0;
+    s_binary_opus_diagnostics_frames = 0;
+}
+
+static bool should_log_binary_opus_diagnostics(void)
+{
+    uint32_t frame = ++s_binary_opus_diagnostics_frames;
+    return frame == 1 || (frame % XIAOZHI_WS_BINARY_OPUS_DIAGNOSTIC_INTERVAL) == 0;
 }
 
 static bool is_ready_or_busy_state(xiaozhi_ws_state_t state)
@@ -272,9 +281,6 @@ static esp_err_t start_audio_stream(audio_opus_pcm_source_t pcm_source)
         .decoder_output_sample_rate = resolve_decoder_output_sample_rate(),
     };
     esp_err_t err = audio_opus_stream_start(&config);
-    if (err == ESP_OK) {
-        audio_opus_stream_log_watermarks("Opus stream started");
-    }
     return err;
 }
 
@@ -454,7 +460,7 @@ static void handle_binary_opus(const uint8_t *data, size_t len)
     esp_err_t err = audio_opus_stream_enqueue_downlink_opus(data, len);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "enqueue downlink opus failed: %s", esp_err_to_name(err));
-    } else {
+    } else if (should_log_binary_opus_diagnostics()) {
         audio_opus_stream_log_watermarks("binary opus");
     }
 }

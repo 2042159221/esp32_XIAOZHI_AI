@@ -192,14 +192,29 @@ def check_runtime_diagnostics(failures: list[str]) -> None:
     stream_header = read("main/services/audio/audio_opus_stream.h")
     stream_source = read("main/services/audio/audio_opus_stream.c")
     ws_source = read("main/xiaozhi/xiaozhi_ws.c")
+    handle_binary_body = function_body(ws_source, "handle_binary_opus")
+    start_audio_body = function_body(ws_source, "start_audio_stream")
 
     require("audio_opus_stream_log_watermarks" in stream_header,
             "audio_opus_stream.h must expose audio_opus_stream_log_watermarks", failures)
     require("uxTaskGetStackHighWaterMark" in stream_source,
             "audio_opus_stream.c must log task stack watermarks", failures)
+    require("uxTaskGetStackHighWaterMark(task)" not in stream_source,
+            "audio_opus_stream diagnostics must not query external task handles", failures)
+    require("task_watermark(TaskHandle_t task)" not in stream_source,
+            "audio_opus_stream diagnostics must not keep task handle watermark helper", failures)
+    require("should_log_binary_opus_diagnostics" in ws_source,
+            "xiaozhi_ws.c must throttle binary opus diagnostics", failures)
+    require("should_log_binary_opus_diagnostics" in handle_binary_body,
+            "handle_binary_opus must use throttled binary opus diagnostics", failures)
+    require('} else {\n        audio_opus_stream_log_watermarks("binary opus");\n    }' not in handle_binary_body,
+            "handle_binary_opus must not unconditionally log binary opus diagnostics", failures)
+    require('"Opus stream started"' not in start_audio_body,
+            "start_audio_stream must not duplicate Opus stream started diagnostics", failures)
+    require('"Opus stream started"' in stream_source or '"Opus stream started"' in ws_source,
+            "runtime diagnostics must keep Opus stream started label", failures)
     for label in (
         "WS READY",
-        "Opus stream started",
         "TTS start",
         "TTS stop",
         "binary opus",

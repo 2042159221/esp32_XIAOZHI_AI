@@ -92,6 +92,9 @@ typedef struct {
     uint32_t downlink_drop_count;
     uint32_t capture_failures;
     uint32_t log_window_frames;
+    volatile uint32_t encoder_stack_watermark_bytes;
+    volatile uint32_t decoder_stack_watermark_bytes;
+    volatile uint32_t capture_stack_watermark_bytes;
 } audio_opus_stream_ctx_t;
 
 static audio_opus_stream_ctx_t s_stream;
@@ -299,16 +302,16 @@ static void close_decoder_locked(void)
     audio_opus_decoder_close(&s_stream.decoder);
 }
 
-static unsigned int task_watermark(TaskHandle_t task)
+static uint32_t current_task_stack_watermark(void)
 {
-    return task != NULL ? (unsigned int)uxTaskGetStackHighWaterMark(task) : 0;
+    return (uint32_t)uxTaskGetStackHighWaterMark(NULL);
 }
 
 void audio_opus_stream_log_watermarks(const char *label)
 {
     const char *name = (label != NULL && label[0] != '\0') ? label : "audio_opus_stream";
     ESP_LOGI(TAG,
-             "%s runtime: running=%d uplink=%d pending_downlink=%u tx_frames=%u rx_frames=%u decoded_frames=%u playback_failures=%u uplink_drops=%u downlink_drops=%u internal_free=%u internal_largest=%u spiram_free=%u spiram_largest=%u encoder_stack=%u decoder_stack=%u capture_stack=%u",
+             "%s runtime: running=%d uplink=%d pending_downlink=%u tx_frames=%u rx_frames=%u decoded_frames=%u playback_failures=%u uplink_drops=%u downlink_drops=%u internal_free=%u internal_largest=%u spiram_free=%u spiram_largest=%u encoder_stack_free_bytes=%u decoder_stack_free_bytes=%u capture_stack_free_bytes=%u",
              name,
              s_stream.running,
              s_stream.uplink_enabled,
@@ -323,9 +326,9 @@ void audio_opus_stream_log_watermarks(const char *label)
              (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
              (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
-             task_watermark(s_stream.encoder_task),
-             task_watermark(s_stream.decoder_task),
-             task_watermark(s_stream.capture_task));
+             (unsigned int)s_stream.encoder_stack_watermark_bytes,
+             (unsigned int)s_stream.decoder_stack_watermark_bytes,
+             (unsigned int)s_stream.capture_stack_watermark_bytes);
 }
 
 esp_err_t audio_opus_stream_start(const audio_opus_stream_config_t *config)
@@ -654,6 +657,7 @@ static void direct_capture_task(void *arg)
 
     ESP_LOGI(TAG, "direct codec capture task started pcm_frame_bytes=%u", (unsigned int)s_stream.pcm_frame_bytes);
     while (s_stream.running) {
+        s_stream.capture_stack_watermark_bytes = current_task_stack_watermark();
         if (s_stream.pcm_source != AUDIO_OPUS_PCM_SOURCE_DIRECT_CODEC || !s_stream.uplink_enabled) {
             vTaskDelay(pdMS_TO_TICKS(AUDIO_OPUS_STREAM_CAPTURE_IDLE_MS));
             continue;
@@ -674,6 +678,7 @@ static void direct_capture_task(void *arg)
     }
 
 done:
+    s_stream.capture_stack_watermark_bytes = current_task_stack_watermark();
     heap_caps_free(pcm_frame);
     s_stream.capture_task = NULL;
     delete_stream_task(NULL);
@@ -695,6 +700,7 @@ static void encoder_task(void *arg)
     accum_reset(&accum, accum_storage, AUDIO_OPUS_STREAM_ACCUM_BYTES);
 
     while (s_stream.running) {
+        s_stream.encoder_stack_watermark_bytes = current_task_stack_watermark();
         size_t item_size = 0;
         uint8_t *item = (uint8_t *)xRingbufferReceive(s_stream.pcm_rb, &item_size, pdMS_TO_TICKS(AUDIO_OPUS_STREAM_RECV_TIMEOUT_MS));
         if (item == NULL) {
@@ -723,6 +729,7 @@ static void encoder_task(void *arg)
         vRingbufferReturnItem(s_stream.pcm_rb, item);
 
         while (s_stream.running && s_stream.uplink_enabled && accum.used >= s_stream.pcm_frame_bytes) {
+            s_stream.encoder_stack_watermark_bytes = current_task_stack_watermark();
             if (!accum_read(&accum, pcm_frame, s_stream.pcm_frame_bytes)) {
                 break;
             }
@@ -778,6 +785,7 @@ static void encoder_task(void *arg)
     }
 
 done:
+    s_stream.encoder_stack_watermark_bytes = current_task_stack_watermark();
     heap_caps_free(opus_frame);
     heap_caps_free(pcm_frame);
     heap_caps_free(accum_storage);
@@ -796,6 +804,7 @@ static void decoder_task(void *arg)
     }
 
     while (s_stream.running) {
+        s_stream.decoder_stack_watermark_bytes = current_task_stack_watermark();
         size_t item_size = 0;
         uint8_t *item = (uint8_t *)xRingbufferReceive(s_stream.downlink_rb, &item_size, pdMS_TO_TICKS(AUDIO_OPUS_STREAM_RECV_TIMEOUT_MS));
         if (item == NULL) {
@@ -861,6 +870,7 @@ static void decoder_task(void *arg)
     }
 
 done:
+    s_stream.decoder_stack_watermark_bytes = current_task_stack_watermark();
     heap_caps_free(decoded_frame);
     s_stream.decoder_task = NULL;
     delete_stream_task(NULL);
