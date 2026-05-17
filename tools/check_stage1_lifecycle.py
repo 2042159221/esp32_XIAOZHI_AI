@@ -52,6 +52,7 @@ def case_body(source, case_label):
 
 def main():
     provisioning = read("main/services/provisioning/provisioning_service.c")
+    wifi_sta = read("main/services/network/wifi_sta_service.c")
     prov_adapter = read("main/infrastructure/esp_provisioning/esp_prov_adapter.c")
     prov_strategy = read("main/infrastructure/esp_provisioning/esp_prov_strategy.c")
     stage1 = read("main/app/xiaozhi_stage1.c")
@@ -97,8 +98,22 @@ def main():
             "provisioning manager start must stay isolated to the provisioning strategy")
     require("esp_wifi_scan_start" not in read("main/services/provisioning/provisioning_service.c"),
             "provisioning service must not start periodic Wi-Fi scans")
-    require("esp_wifi_scan_start" not in read("main/services/network/wifi_sta_service.c"),
+    require("esp_wifi_scan_start" not in wifi_sta,
             "business Wi-Fi STA service must not start periodic Wi-Fi scans")
+    require("#define WIFI_STA_SERVICE_COUNTRY_CODE \"CN\"" in wifi_sta,
+            "business Wi-Fi STA service must explicitly configure the local 2.4G country code")
+    require("#define WIFI_STA_SERVICE_IEEE80211D_ENABLED false" in wifi_sta,
+            "business Wi-Fi STA service must disable 802.11d auto country override")
+    require("esp_wifi_set_country_code(WIFI_STA_SERVICE_COUNTRY_CODE" in wifi_sta,
+            "business Wi-Fi STA service must set Wi-Fi country before connecting")
+    require("esp_wifi_get_country(&configured)" in wifi_sta,
+            "business Wi-Fi STA service must log the effective Wi-Fi country")
+    require("WIFI_COUNTRY_POLICY_MANUAL" in wifi_sta,
+            "business Wi-Fi STA service must verify manual country policy")
+    country_pos = wifi_sta.find("ESP_RETURN_ON_ERROR(configure_wifi_country()")
+    mode_pos = wifi_sta.find("ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA)")
+    require(country_pos >= 0 and mode_pos >= 0 and country_pos < mode_pos,
+            "business Wi-Fi STA service must configure country before setting STA mode")
 
     require("config XIAOZHI_STAGE1_AUTO_SR_ENABLE" in kconfig,
             "missing stage1 SR auto-init Kconfig switch")

@@ -21,6 +21,9 @@ enum {
     WIFI_DEFAULT_MAX_RETRY = 5,
 };
 
+#define WIFI_STA_SERVICE_COUNTRY_CODE "CN"
+#define WIFI_STA_SERVICE_IEEE80211D_ENABLED false
+
 static EventGroupHandle_t s_wifi_event_group;
 static esp_netif_t *s_wifi_sta_netif;
 static uint8_t s_retry_count;
@@ -29,6 +32,9 @@ static bool s_wifi_initialized;
 static bool s_wifi_connected;
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
+static esp_err_t configure_wifi_country(void);
+static void log_wifi_country(const char *label, const wifi_country_t *country);
+static const char *wifi_country_policy_name(wifi_country_policy_t policy);
 static esp_err_t copy_wifi_field(uint8_t *dest, size_t dest_size, const char *src, const char *field_name);
 static void log_dns_server(esp_netif_t *netif, esp_netif_dns_type_t type, const char *label);
 static void log_network_info(esp_netif_t *netif, const esp_netif_ip_info_t *ip_info);
@@ -133,6 +139,7 @@ esp_err_t wifi_sta_service_init(void)
 
     wifi_init_config_t init_config = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&init_config), TAG, "init wifi failed");
+    ESP_RETURN_ON_ERROR(configure_wifi_country(), TAG, "configure wifi country failed");
     ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL, NULL), TAG, "register wifi event handler failed");
     ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL, NULL), TAG, "register ip event handler failed");
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "set wifi mode sta failed");
@@ -284,6 +291,65 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         ESP_LOGI(TAG, "========== WIFI STA CONNECTED ==========");
         log_network_info(event->esp_netif != NULL ? event->esp_netif : s_wifi_sta_netif, &event->ip_info);
+    }
+}
+
+static esp_err_t configure_wifi_country(void)
+{
+    wifi_country_t current = {0};
+    esp_err_t err = esp_wifi_get_country(&current);
+    if (err == ESP_OK) {
+        log_wifi_country("wifi country before configure", &current);
+    } else {
+        ESP_LOGW(TAG, "get wifi country before configure failed: %s", esp_err_to_name(err));
+    }
+
+    const bool already_configured = err == ESP_OK &&
+                                    current.cc[0] == WIFI_STA_SERVICE_COUNTRY_CODE[0] &&
+                                    current.cc[1] == WIFI_STA_SERVICE_COUNTRY_CODE[1] &&
+                                    current.schan == 1 &&
+                                    current.nchan == 13 &&
+                                    current.policy == WIFI_COUNTRY_POLICY_MANUAL;
+    if (!already_configured) {
+        ESP_RETURN_ON_ERROR(esp_wifi_set_country_code(WIFI_STA_SERVICE_COUNTRY_CODE,
+                                                      WIFI_STA_SERVICE_IEEE80211D_ENABLED),
+                            TAG,
+                            "set wifi country code failed");
+    }
+
+    wifi_country_t configured = {0};
+    ESP_RETURN_ON_ERROR(esp_wifi_get_country(&configured), TAG, "get configured wifi country failed");
+    log_wifi_country(already_configured ? "wifi country already configured" : "wifi country configured", &configured);
+    return ESP_OK;
+}
+
+static void log_wifi_country(const char *label, const wifi_country_t *country)
+{
+    if (country == NULL) {
+        return;
+    }
+
+    ESP_LOGI(TAG,
+             "%s cc=%c%c schan=%u nchan=%u max_tx_power=%d policy=%s ieee80211d=%s",
+             label,
+             country->cc[0],
+             country->cc[1],
+             (unsigned int)country->schan,
+             (unsigned int)country->nchan,
+             (int)country->max_tx_power,
+             wifi_country_policy_name(country->policy),
+             WIFI_STA_SERVICE_IEEE80211D_ENABLED ? "enabled" : "disabled");
+}
+
+static const char *wifi_country_policy_name(wifi_country_policy_t policy)
+{
+    switch (policy) {
+    case WIFI_COUNTRY_POLICY_AUTO:
+        return "AUTO";
+    case WIFI_COUNTRY_POLICY_MANUAL:
+        return "MANUAL";
+    default:
+        return "UNKNOWN";
     }
 }
 
