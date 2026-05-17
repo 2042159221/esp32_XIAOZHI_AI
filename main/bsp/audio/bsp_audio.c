@@ -16,6 +16,8 @@ static const char *TAG = "bsp_audio";
 static i2c_master_bus_handle_t s_i2c_bus;
 static i2s_chan_handle_t s_i2s_tx_chan;
 static i2s_chan_handle_t s_i2s_rx_chan;
+static bool s_i2s_tx_enabled;
+static bool s_i2s_rx_enabled;
 static const audio_codec_data_if_t *s_i2s_data_if;
 static esp_codec_dev_handle_t s_codec;
 static bool s_codec_opened;
@@ -25,6 +27,8 @@ static portMUX_TYPE s_audio_lock_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static esp_err_t bsp_audio_init_locked(void);
 static esp_err_t bsp_audio_open_with_sample_rate_locked(int sample_rate);
+static esp_err_t enable_i2s_channel(i2s_chan_handle_t chan, bool *enabled, const char *label);
+static esp_err_t disable_i2s_channel_if_enabled(i2s_chan_handle_t chan, bool *enabled, const char *label);
 
 static esp_err_t ensure_audio_lock(void)
 {
@@ -121,17 +125,19 @@ static esp_err_t init_i2s(void)
         err = i2s_channel_init_std_mode(s_i2s_rx_chan, &std_cfg);
     }
     if (err == ESP_OK) {
-        err = i2s_channel_enable(s_i2s_tx_chan);
+        err = enable_i2s_channel(s_i2s_tx_chan, &s_i2s_tx_enabled, "TX");
     }
     if (err == ESP_OK) {
-        err = i2s_channel_enable(s_i2s_rx_chan);
+        err = enable_i2s_channel(s_i2s_rx_chan, &s_i2s_rx_enabled, "RX");
     }
     if (err != ESP_OK) {
         if (s_i2s_tx_chan != NULL) {
+            (void)disable_i2s_channel_if_enabled(s_i2s_tx_chan, &s_i2s_tx_enabled, "TX");
             i2s_del_channel(s_i2s_tx_chan);
             s_i2s_tx_chan = NULL;
         }
         if (s_i2s_rx_chan != NULL) {
+            (void)disable_i2s_channel_if_enabled(s_i2s_rx_chan, &s_i2s_rx_enabled, "RX");
             i2s_del_channel(s_i2s_rx_chan);
             s_i2s_rx_chan = NULL;
         }
@@ -154,16 +160,52 @@ static bool is_supported_sample_rate(int sample_rate)
     return sample_rate == 16000 || sample_rate == 24000;
 }
 
+static esp_err_t enable_i2s_channel(i2s_chan_handle_t chan, bool *enabled, const char *label)
+{
+    ESP_RETURN_ON_FALSE(chan != NULL && enabled != NULL, ESP_ERR_INVALID_ARG, TAG, "invalid I2S enable args");
+    if (*enabled) {
+        return ESP_OK;
+    }
+
+    esp_err_t err = i2s_channel_enable(chan);
+    if (err == ESP_OK) {
+        *enabled = true;
+    } else if (err == ESP_ERR_INVALID_STATE) {
+        ESP_LOGD(TAG, "I2S %s enable skipped because channel state is already enabled", label);
+        *enabled = true;
+        err = ESP_OK;
+    }
+    return err;
+}
+
+static esp_err_t disable_i2s_channel_if_enabled(i2s_chan_handle_t chan, bool *enabled, const char *label)
+{
+    ESP_RETURN_ON_FALSE(chan != NULL && enabled != NULL, ESP_ERR_INVALID_ARG, TAG, "invalid I2S disable args");
+    if (!*enabled) {
+        return ESP_OK;
+    }
+
+    esp_err_t err = i2s_channel_disable(chan);
+    if (err == ESP_OK) {
+        *enabled = false;
+    } else if (err == ESP_ERR_INVALID_STATE) {
+        ESP_LOGD(TAG, "I2S %s disable skipped because channel state is already disabled", label);
+        *enabled = false;
+        err = ESP_OK;
+    }
+    return err;
+}
+
 static void restore_i2s_sample_rate(int old_sample_rate)
 {
     i2s_std_clk_config_t clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(old_sample_rate);
 
-    esp_err_t tx_disable = i2s_channel_disable(s_i2s_tx_chan);
-    if (tx_disable != ESP_OK && tx_disable != ESP_ERR_INVALID_STATE) {
+    esp_err_t tx_disable = disable_i2s_channel_if_enabled(s_i2s_tx_chan, &s_i2s_tx_enabled, "TX");
+    if (tx_disable != ESP_OK) {
         ESP_LOGW(TAG, "disable I2S TX for restore failed: %s", esp_err_to_name(tx_disable));
     }
-    esp_err_t rx_disable = i2s_channel_disable(s_i2s_rx_chan);
-    if (rx_disable != ESP_OK && rx_disable != ESP_ERR_INVALID_STATE) {
+    esp_err_t rx_disable = disable_i2s_channel_if_enabled(s_i2s_rx_chan, &s_i2s_rx_enabled, "RX");
+    if (rx_disable != ESP_OK) {
         ESP_LOGW(TAG, "disable I2S RX for restore failed: %s", esp_err_to_name(rx_disable));
     }
 
@@ -176,11 +218,11 @@ static void restore_i2s_sample_rate(int old_sample_rate)
         ESP_LOGE(TAG, "restore I2S RX clock to %d Hz failed: %s", old_sample_rate, esp_err_to_name(rx_reconfig));
     }
 
-    esp_err_t tx_enable = i2s_channel_enable(s_i2s_tx_chan);
+    esp_err_t tx_enable = enable_i2s_channel(s_i2s_tx_chan, &s_i2s_tx_enabled, "TX");
     if (tx_enable != ESP_OK) {
         ESP_LOGE(TAG, "restore I2S TX enable failed: %s", esp_err_to_name(tx_enable));
     }
-    esp_err_t rx_enable = i2s_channel_enable(s_i2s_rx_chan);
+    esp_err_t rx_enable = enable_i2s_channel(s_i2s_rx_chan, &s_i2s_rx_enabled, "RX");
     if (rx_enable != ESP_OK) {
         ESP_LOGE(TAG, "restore I2S RX enable failed: %s", esp_err_to_name(rx_enable));
     }
@@ -196,14 +238,14 @@ static esp_err_t reconfigure_i2s_sample_rate(int old_sample_rate, int sample_rat
         return ESP_OK;
     }
 
-    esp_err_t tx_disable = i2s_channel_disable(s_i2s_tx_chan);
-    esp_err_t rx_disable = i2s_channel_disable(s_i2s_rx_chan);
-    if (tx_disable != ESP_OK && tx_disable != ESP_ERR_INVALID_STATE) {
+    esp_err_t tx_disable = disable_i2s_channel_if_enabled(s_i2s_tx_chan, &s_i2s_tx_enabled, "TX");
+    esp_err_t rx_disable = disable_i2s_channel_if_enabled(s_i2s_rx_chan, &s_i2s_rx_enabled, "RX");
+    if (tx_disable != ESP_OK) {
         ESP_LOGE(TAG, "disable I2S TX before sample-rate switch failed: %s", esp_err_to_name(tx_disable));
         restore_i2s_sample_rate(old_sample_rate);
         return tx_disable;
     }
-    if (rx_disable != ESP_OK && rx_disable != ESP_ERR_INVALID_STATE) {
+    if (rx_disable != ESP_OK) {
         ESP_LOGE(TAG, "disable I2S RX before sample-rate switch failed: %s", esp_err_to_name(rx_disable));
         restore_i2s_sample_rate(old_sample_rate);
         return rx_disable;
@@ -222,13 +264,13 @@ static esp_err_t reconfigure_i2s_sample_rate(int old_sample_rate, int sample_rat
         restore_i2s_sample_rate(old_sample_rate);
         return err;
     }
-    err = i2s_channel_enable(s_i2s_tx_chan);
+    err = enable_i2s_channel(s_i2s_tx_chan, &s_i2s_tx_enabled, "TX");
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "enable I2S TX at %d Hz failed: %s", sample_rate, esp_err_to_name(err));
         restore_i2s_sample_rate(old_sample_rate);
         return err;
     }
-    err = i2s_channel_enable(s_i2s_rx_chan);
+    err = enable_i2s_channel(s_i2s_rx_chan, &s_i2s_rx_enabled, "RX");
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "enable I2S RX at %d Hz failed: %s", sample_rate, esp_err_to_name(err));
         restore_i2s_sample_rate(old_sample_rate);
