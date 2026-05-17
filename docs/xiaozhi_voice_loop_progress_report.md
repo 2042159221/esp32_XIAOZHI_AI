@@ -312,12 +312,12 @@ P2:
 - Flash/monitor command: `idf.py -p COM16 flash monitor`。
 - Server hello sample_rate: `format=opus sample_rate=24000 channels=1 frame_duration=60`，已触发 `codec opened sample_rate=24000` 和 `opus decoder ready output_sample_rate=24000 decoded_frame_bytes=2880`。
 - SW3 detect text sent: 已发送，日志为 `listen detect payload={"session_id":"0e1e0f59","type":"listen","state":"detect","text":"你好，请介绍你自己"}`，随后 `state transition READY -> WAITING_RESPONSE`。
-- TTS JSON observed: 已观察到 `tts state=start`、多条 `tts state=sentence_start`、`stt text=你好，请介绍你自己`；本次日志片段未包含 `tts state=stop`，因此不能标记 TTS stop/回到 READY 已验收。
-- Binary OPUS frames observed: 已观察到大量 `binary opus received len=...`，片段中长度约 `119` 到 `273` 字节，`rx_frames` 至少达到 `224`，未见 downlink drop。
+- TTS JSON observed: 已观察到 `tts state=start`、多条 `tts state=sentence_start`、`stt text=你好，请介绍你自己`、`tts state=stop`，并确认 `state transition SPEAKING -> READY`。
+- Binary OPUS frames observed: 已观察到大量 `binary opus received len=...`，片段中长度约 `77` 到 `274` 字节；重连后第二轮 TTS 的 `rx_frames=481 decoded_frames=481`，未见 downlink drop。
 - Speaker playback result: 用户确认板子已经可以播放声音；日志多次出现 `speaker playback OK`，`playback_failures=0`。
-- READY idle disconnect recovery: 未在本次 SW3 播放日志中完成验收；此前曾观察到 READY 后约一分钟 WebSocket close 并清理音频流，仍需单独执行“断开后再按 SW3 自动重连并 detect”的验收。
-- Internal heap low watermark: 本次片段中 `minimum_free_heap` 低点约 `8207816` bytes，`internal_free` 低点约 `23759` bytes，`internal_largest` 低点约 `7680` bytes。
-- PSRAM free after TTS: 本次未观察到 `tts stop` 后水位；TTS 播放期间 `spiram_free` 约 `8201724` bytes，`spiram_largest` 约 `8126464` bytes。
-- Audio task stack watermark: 下行播放期间 `decoder_stack_free_bytes` 低点约 `15724`，`encoder_stack_free_bytes` 约 `48216`；`capture_stack_free_bytes=0`，因为 P0 文本闭环未启用上行采集。
+- READY idle disconnect recovery: 已通过。日志先出现 `state transition READY -> DISCONNECTED`，随后 SW3 单击触发 `cleanup stale websocket client before reconnect`、`DISCONNECTED -> CONNECTING -> WS_CONNECTED -> HELLO_SENT -> READY`，再发送 `listen detect payload={"session_id":"81a3c6b9","type":"listen","state":"detect","text":"你好，请介绍你自己"}` 并完成 TTS 播放。
+- Internal heap low watermark: 本次片段中 `minimum_free_heap` 低点约 `8142016` bytes，`internal_free` 低点约 `27435` bytes，`internal_largest` 低点约 `7680` bytes。
+- PSRAM free after TTS: `TTS stop heap` 显示 `spiram_free=8153712` bytes，`spiram_largest=7995392` bytes。
+- Audio task stack watermark: 下行播放期间 `decoder_stack_free_bytes` 低点约 `15892`，`encoder_stack_free_bytes` 约 `48208`；`capture_stack_free_bytes=0`，因为 P0 文本闭环未启用上行采集。
 
-最新结论：P0 的 `SW3 单击 -> 文本 detect -> 服务端 TTS -> 24 kHz OPUS 解码 -> ES8311/I2S/PA 播放` 已经通过实机验证。仍未关闭的验收项是 `tts stop -> READY` 结束状态和 READY 空闲断开后的再次 SW3 自动重连 detect。
+最新结论：P0 的 `SW3 单击 -> 文本 detect -> 服务端 TTS -> 24 kHz OPUS 解码 -> ES8311/I2S/PA 播放` 已经通过实机验证；`tts stop -> READY` 和 READY 空闲断开后的再次 SW3 自动重连 detect 也已通过。
