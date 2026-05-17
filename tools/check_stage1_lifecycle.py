@@ -52,26 +52,51 @@ def case_body(source, case_label):
 
 def main():
     provisioning = read("main/services/provisioning/provisioning_service.c")
+    prov_adapter = read("main/infrastructure/esp_provisioning/esp_prov_adapter.c")
+    prov_strategy = read("main/infrastructure/esp_provisioning/esp_prov_strategy.c")
     stage1 = read("main/app/xiaozhi_stage1.c")
     kconfig = read("main/Kconfig.projbuild")
     sdkconfig_defaults = read("sdkconfig.defaults")
 
     finish_body = function_body(provisioning, "finish_provisioning_stop")
     request_body = function_body(provisioning, "request_provisioning_stop_now")
+    maybe_start_body = function_body(provisioning, "maybe_start_business_after_provisioning")
+    start_business_body = function_body(provisioning, "start_business")
     wifi_prov_end = case_body(provisioning, "case WIFI_PROV_END:")
+    wifi_cred_success = case_body(provisioning, "case WIFI_PROV_CRED_SUCCESS:")
 
     require("esp_prov_adapter_deinit();" in finish_body,
             "provisioning deinit must happen in finish_provisioning_stop")
+    require("provisioning deinit complete" in finish_body,
+            "finish_provisioning_stop must log provisioning deinit completion")
     require("PROV_STOPPED_BIT set, PROV_DEINITED=1" in finish_body,
             "finish_provisioning_stop must log stopped/deinited gate")
     require("maybe_start_business_after_provisioning();" in finish_body,
             "finish_provisioning_stop must trigger stage1 gate")
+    require("business start gate passed" in maybe_start_body,
+            "business startup must log that provisioning stop/deinit gate passed")
+    require("before stage1 start" in start_business_body,
+            "business startup must log immediately before xiaozhi stage1")
     require("schedule_provisioning_finalize();" in request_body,
             "app-requested provisioning stop must schedule finalize fallback")
+    require("WIFI_PROV_CRED_SUCCESS" in wifi_cred_success,
+            "WIFI_PROV_CRED_SUCCESS must be logged before stopping provisioning")
     require("schedule_provisioning_finalize();" in wifi_prov_end,
             "WIFI_PROV_END must schedule async finalize")
+    require("WIFI_PROV_END" in wifi_prov_end,
+            "WIFI_PROV_END must be logged when the provisioning manager reports stop complete")
     require("esp_prov_adapter_deinit();" not in wifi_prov_end,
             "WIFI_PROV_END callback must not call deinit under manager lock")
+    require("wifi_prov_mgr_stop_provisioning();" in prov_adapter,
+            "provisioning adapter must stop wifi_prov_mgr explicitly")
+    require("wifi_prov_mgr_deinit();" in prov_adapter,
+            "provisioning adapter must deinit wifi_prov_mgr explicitly")
+    require("wifi_prov_mgr_start_provisioning" in prov_strategy,
+            "provisioning manager start must stay isolated to the provisioning strategy")
+    require("esp_wifi_scan_start" not in read("main/services/provisioning/provisioning_service.c"),
+            "provisioning service must not start periodic Wi-Fi scans")
+    require("esp_wifi_scan_start" not in read("main/services/network/wifi_sta_service.c"),
+            "business Wi-Fi STA service must not start periodic Wi-Fi scans")
 
     require("config XIAOZHI_STAGE1_AUTO_SR_ENABLE" in kconfig,
             "missing stage1 SR auto-init Kconfig switch")
