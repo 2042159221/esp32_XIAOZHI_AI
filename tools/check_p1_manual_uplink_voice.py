@@ -20,6 +20,12 @@ def require(condition: bool, message: str, failures: list[str]) -> None:
         failures.append(message)
 
 
+def require_before(body: str, first: str, second: str, message: str, failures: list[str]) -> None:
+    first_index = body.find(first)
+    second_index = body.find(second)
+    require(first_index >= 0 and second_index >= 0 and first_index < second_index, message, failures)
+
+
 def function_body(source: str, name: str) -> str:
     match = re.search(rf"\b{name}\s*\([^)]*\)\s*\{{", source)
     if match is None:
@@ -99,6 +105,11 @@ def check_manual_listen_state_machine(failures: list[str]) -> None:
             "manual listen start must enter LISTENING after enabling uplink", failures)
     require("audio_opus_stream_set_uplink_enabled(true)" in trigger_body,
             "manual listen start must enable the Opus uplink", failures)
+    require_before(trigger_body,
+                   "set_state(XIAOZHI_WS_STATE_LISTENING)",
+                   "audio_opus_stream_set_uplink_enabled(true)",
+                   "manual listen start must enter LISTENING before enabling uplink to avoid dropping early Opus frames",
+                   failures)
 
     require("audio_opus_stream_set_uplink_enabled(false)" in stop_body,
             "listen stop must disable uplink immediately", failures)
@@ -143,6 +154,35 @@ def check_pcm_diagnostics_and_sample_contract(failures: list[str]) -> None:
             "direct capture must log PCM statistics for captured microphone frames", failures)
 
 
+def check_p1_quality_fixes(failures: list[str]) -> None:
+    input_source = read("main/app/app_input_controller.c")
+    stream_source = read("main/services/audio/audio_opus_stream.c")
+    bsp_source = read("main/bsp/audio/bsp_audio.c")
+    kconfig = read("main/Kconfig.projbuild")
+    stream_start_body = function_body(stream_source, "audio_opus_stream_start")
+    uplink_body = function_body(stream_source, "audio_opus_stream_set_uplink_enabled")
+    register_body = function_body(input_source, "register_adc_button_events")
+
+    require("BUTTON_LONG_PRESS_HOLD" not in register_body,
+            "SW3 long press hold must not be registered because it floods logs during realtime capture", failures)
+    require("ensure_encoder_locked()" not in stream_start_body,
+            "audio_opus_stream_start must not pre-open the Opus encoder for downlink-only playback", failures)
+    require("ensure_encoder_locked()" in uplink_body,
+            "audio_opus_stream_set_uplink_enabled(true) must open the Opus encoder only when uplink starts", failures)
+
+    require("s_i2s_tx_enabled" in bsp_source and "s_i2s_rx_enabled" in bsp_source,
+            "bsp_audio.c must track I2S TX/RX enabled state before disabling channels", failures)
+    require("disable_i2s_channel_if_enabled" in bsp_source,
+            "bsp_audio.c must wrap I2S disable to avoid invalid-state driver errors", failures)
+    require(bsp_source.count("i2s_channel_disable(") == 1,
+            "bsp_audio.c must call i2s_channel_disable only inside the state-aware wrapper", failures)
+
+    require("config XIAOZHI_AUDIO_MIC_GAIN_DB" in kconfig,
+            "Kconfig must expose XIAOZHI_AUDIO_MIC_GAIN_DB for ES8311 microphone gain tuning", failures)
+    require("esp_codec_dev_set_in_gain" in bsp_source and "CONFIG_XIAOZHI_AUDIO_MIC_GAIN_DB" in bsp_source,
+            "bsp_audio.c must apply configured ES8311 microphone gain after codec open", failures)
+
+
 def check_sr_auto_init_disabled(failures: list[str]) -> None:
     defaults = read("sdkconfig.defaults")
     sdkconfig = read("sdkconfig")
@@ -161,6 +201,7 @@ def main() -> int:
     check_sw3_long_press_events(failures)
     check_manual_listen_state_machine(failures)
     check_pcm_diagnostics_and_sample_contract(failures)
+    check_p1_quality_fixes(failures)
     check_sr_auto_init_disabled(failures)
 
     if failures:
