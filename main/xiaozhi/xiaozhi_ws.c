@@ -759,16 +759,18 @@ esp_err_t xiaozhi_ws_trigger_listen(xiaozhi_ws_listen_mode_t mode)
         return err;
     }
 
+    s_next_opus_send_tick = 0;
+    set_state(XIAOZHI_WS_STATE_LISTENING);
+
     err = audio_opus_stream_set_uplink_enabled(true);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "manual listen uplink enable failed: %s", esp_err_to_name(err));
         (void)send_listen_state("stop", "manual");
-        (void)restore_downlink_audio_stream(AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED);
+        esp_err_t restore_err = restore_downlink_audio_stream(AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED);
+        set_state(restore_err == ESP_OK ? XIAOZHI_WS_STATE_WAITING_RESPONSE : XIAOZHI_WS_STATE_DISCONNECTED);
         return err;
     }
 
-    s_next_opus_send_tick = 0;
-    set_state(XIAOZHI_WS_STATE_LISTENING);
     log_heap_stats("listen start manual");
     audio_opus_stream_log_watermarks("listen start manual");
     return ESP_OK;
