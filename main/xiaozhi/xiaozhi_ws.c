@@ -51,6 +51,12 @@ static const char *state_name(xiaozhi_ws_state_t state)
     switch (state) {
     case XIAOZHI_WS_STATE_DISCONNECTED:
         return "DISCONNECTED";
+    case XIAOZHI_WS_STATE_CONNECTING:
+        return "CONNECTING";
+    case XIAOZHI_WS_STATE_WS_CONNECTED:
+        return "WS_CONNECTED";
+    case XIAOZHI_WS_STATE_HELLO_SENT:
+        return "HELLO_SENT";
     case XIAOZHI_WS_STATE_READY:
         return "READY";
     case XIAOZHI_WS_STATE_WAKE_DETECTED:
@@ -61,8 +67,8 @@ static const char *state_name(xiaozhi_ws_state_t state)
         return "WAITING_RESPONSE";
     case XIAOZHI_WS_STATE_SPEAKING:
         return "SPEAKING";
-    case XIAOZHI_WS_STATE_RECONNECTING:
-        return "RECONNECTING";
+    case XIAOZHI_WS_STATE_CLOSING:
+        return "CLOSING";
     default:
         return "UNKNOWN";
     }
@@ -82,6 +88,24 @@ static void reset_session_flags(void)
 {
     s_waiting_tts_stop = false;
     s_next_opus_send_tick = 0;
+}
+
+static bool is_ready_or_busy_state(xiaozhi_ws_state_t state)
+{
+    return state == XIAOZHI_WS_STATE_READY ||
+           state == XIAOZHI_WS_STATE_WAKE_DETECTED ||
+           state == XIAOZHI_WS_STATE_LISTENING ||
+           state == XIAOZHI_WS_STATE_WAITING_RESPONSE ||
+           state == XIAOZHI_WS_STATE_SPEAKING;
+}
+
+static bool can_send_business_message(void)
+{
+    return s_ws_client != NULL &&
+           esp_websocket_client_is_connected(s_ws_client) &&
+           (s_ws_state == XIAOZHI_WS_STATE_READY ||
+            s_ws_state == XIAOZHI_WS_STATE_WAKE_DETECTED ||
+            s_ws_state == XIAOZHI_WS_STATE_WAITING_RESPONSE);
 }
 
 static void log_heap_stats(const char *label)
@@ -184,6 +208,7 @@ static esp_err_t send_hello(void)
     ESP_RETURN_ON_ERROR(xiaozhi_protocol_build_hello_json(&json), TAG, "build hello failed");
     esp_err_t err = send_text_json(json, "hello");
     if (err == ESP_OK) {
+        set_state(XIAOZHI_WS_STATE_HELLO_SENT);
         log_heap_stats("hello sent");
     }
     return err;
@@ -302,8 +327,7 @@ static void handle_websocket_write_failure(const char *stage, int sent, size_t e
     }
     s_reconnect_in_progress = true;
 
-    (void)audio_opus_stream_set_uplink_enabled(false);
-    audio_opus_stream_flush();
+    stop_session_audio_io();
     cleanup_websocket_client();
     set_state(XIAOZHI_WS_STATE_DISCONNECTED);
 
@@ -432,6 +456,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
     switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED:
         ESP_LOGI(TAG, "websocket connected");
+        set_state(XIAOZHI_WS_STATE_WS_CONNECTED);
         if (send_hello() != ESP_OK) {
             set_state(XIAOZHI_WS_STATE_DISCONNECTED);
         }
@@ -497,13 +522,11 @@ esp_err_t xiaozhi_ws_start(void)
     }
 
     if (s_ws_client != NULL) {
-        if (s_ws_state == XIAOZHI_WS_STATE_READY ||
-            s_ws_state == XIAOZHI_WS_STATE_WAKE_DETECTED ||
-            s_ws_state == XIAOZHI_WS_STATE_LISTENING ||
-            s_ws_state == XIAOZHI_WS_STATE_WAITING_RESPONSE ||
-            s_ws_state == XIAOZHI_WS_STATE_SPEAKING ||
-            s_ws_state == XIAOZHI_WS_STATE_RECONNECTING) {
-            ESP_LOGW(TAG, "websocket client already started");
+        if (s_ws_state == XIAOZHI_WS_STATE_CONNECTING ||
+            s_ws_state == XIAOZHI_WS_STATE_WS_CONNECTED ||
+            s_ws_state == XIAOZHI_WS_STATE_HELLO_SENT ||
+            is_ready_or_busy_state(s_ws_state)) {
+            ESP_LOGW(TAG, "websocket client already started state=%s", state_name(s_ws_state));
             return ESP_OK;
         }
 
@@ -547,7 +570,7 @@ esp_err_t xiaozhi_ws_start(void)
         return err;
     }
 
-    set_state(XIAOZHI_WS_STATE_RECONNECTING);
+    set_state(XIAOZHI_WS_STATE_CONNECTING);
     ESP_LOGI(TAG, "websocket connecting, url=%s", url);
     log_token_summary(token);
     log_heap_stats("before websocket start");
@@ -571,6 +594,7 @@ esp_err_t xiaozhi_ws_stop(void)
         return ESP_OK;
     }
 
+    set_state(XIAOZHI_WS_STATE_CLOSING);
     stop_opus_audio_stream();
     cleanup_websocket_client();
 
@@ -586,10 +610,7 @@ xiaozhi_ws_state_t xiaozhi_ws_get_state(void)
 
 bool xiaozhi_ws_is_ready(void)
 {
-    return s_ws_state == XIAOZHI_WS_STATE_READY ||
-           s_ws_state == XIAOZHI_WS_STATE_WAKE_DETECTED ||
-           s_ws_state == XIAOZHI_WS_STATE_LISTENING ||
-           s_ws_state == XIAOZHI_WS_STATE_WAITING_RESPONSE;
+    return is_ready_or_busy_state(s_ws_state) && s_ws_state != XIAOZHI_WS_STATE_SPEAKING;
 }
 
 static esp_err_t wait_for_ready(uint32_t timeout_ms)
@@ -619,11 +640,7 @@ esp_err_t xiaozhi_ws_trigger_listen(xiaozhi_ws_listen_mode_t mode)
 
 static esp_err_t ensure_websocket_ready(void)
 {
-    if (s_ws_state == XIAOZHI_WS_STATE_READY ||
-        s_ws_state == XIAOZHI_WS_STATE_WAKE_DETECTED ||
-        s_ws_state == XIAOZHI_WS_STATE_LISTENING ||
-        s_ws_state == XIAOZHI_WS_STATE_WAITING_RESPONSE ||
-        s_ws_state == XIAOZHI_WS_STATE_SPEAKING) {
+    if (is_ready_or_busy_state(s_ws_state)) {
         return ESP_OK;
     }
 
@@ -637,6 +654,12 @@ static esp_err_t ensure_websocket_ready(void)
 static esp_err_t send_listen_state(const char *state, const char *mode)
 {
     ESP_RETURN_ON_FALSE(s_session_id[0] != '\0', ESP_ERR_INVALID_STATE, TAG, "session_id missing");
+    ESP_RETURN_ON_FALSE(can_send_business_message() || s_ws_state == XIAOZHI_WS_STATE_LISTENING,
+                        ESP_ERR_INVALID_STATE,
+                        TAG,
+                        "listen state=%s cannot be sent in ws state=%s",
+                        state,
+                        state_name(s_ws_state));
 
     cJSON *root = cJSON_CreateObject();
     ESP_RETURN_ON_FALSE(root != NULL, ESP_ERR_NO_MEM, TAG, "create listen root failed");
@@ -748,9 +771,11 @@ esp_err_t xiaozhi_ws_trigger_detect_text(const char *text)
         return err;
     }
 
-    if (s_ws_state != XIAOZHI_WS_STATE_READY &&
-        s_ws_state != XIAOZHI_WS_STATE_WAKE_DETECTED) {
-        ESP_LOGW(TAG, "detect text invalid state=%s", state_name(s_ws_state));
+    if (!can_send_business_message() ||
+        (s_ws_state != XIAOZHI_WS_STATE_READY && s_ws_state != XIAOZHI_WS_STATE_WAKE_DETECTED)) {
+        ESP_LOGW(TAG, "detect text invalid state=%s connected=%d",
+                 state_name(s_ws_state),
+                 s_ws_client != NULL ? esp_websocket_client_is_connected(s_ws_client) : 0);
         return ESP_ERR_INVALID_STATE;
     }
 

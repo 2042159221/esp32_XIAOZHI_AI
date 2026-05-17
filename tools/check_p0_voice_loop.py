@@ -163,6 +163,31 @@ def check_detect_text_request(failures: list[str]) -> None:
             "detect text must transition to WAITING_RESPONSE after send", failures)
 
 
+def check_ws_state_machine(failures: list[str]) -> None:
+    header = read("main/xiaozhi/xiaozhi_ws.h")
+    source = read("main/xiaozhi/xiaozhi_ws.c")
+
+    for state in (
+        "XIAOZHI_WS_STATE_CONNECTING",
+        "XIAOZHI_WS_STATE_WS_CONNECTED",
+        "XIAOZHI_WS_STATE_HELLO_SENT",
+        "XIAOZHI_WS_STATE_READY",
+        "XIAOZHI_WS_STATE_WAITING_RESPONSE",
+        "XIAOZHI_WS_STATE_SPEAKING",
+        "XIAOZHI_WS_STATE_CLOSING",
+    ):
+        require(state in header, f"xiaozhi_ws.h must define {state}", failures)
+
+    require("set_state(XIAOZHI_WS_STATE_CONNECTING)" in source,
+            "xiaozhi_ws_start must enter CONNECTING before esp_websocket_client_start", failures)
+    require("set_state(XIAOZHI_WS_STATE_WS_CONNECTED)" in source,
+            "websocket connected event must enter WS_CONNECTED", failures)
+    require("set_state(XIAOZHI_WS_STATE_HELLO_SENT)" in source,
+            "successful hello send must enter HELLO_SENT", failures)
+    require("stop_session_audio_io();" in source,
+            "disconnect/error paths must stop audio stream through stop_session_audio_io", failures)
+
+
 def main() -> int:
     failures: list[str] = []
     check_sdkconfig_defaults(failures)
@@ -170,6 +195,7 @@ def main() -> int:
     check_downlink_sample_rate(failures)
     check_stream_direct_capture(failures)
     check_detect_text_request(failures)
+    check_ws_state_machine(failures)
     check_voice_session_task(failures)
 
     if failures:
