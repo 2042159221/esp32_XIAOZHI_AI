@@ -84,6 +84,7 @@ typedef struct {
     volatile bool uplink_enabled;
     uint32_t tx_frames;
     uint32_t tx_bytes;
+    uint32_t capture_frames;
     uint32_t rx_frames;
     uint32_t decoded_frames;
     volatile uint32_t downlink_pending_frames;
@@ -102,6 +103,7 @@ static audio_opus_stream_ctx_t s_stream;
 static void direct_capture_task(void *arg);
 static void encoder_task(void *arg);
 static void decoder_task(void *arg);
+static void log_direct_capture_pcm_stats(const uint8_t *pcm_frame, size_t len);
 
 static size_t pcm_frame_bytes_for_sample_rate(int sample_rate)
 {
@@ -182,6 +184,72 @@ static void drain_ringbuffer(RingbufHandle_t rb)
 static bool should_log_frame(uint32_t frame_index)
 {
     return frame_index <= 3 || (s_stream.log_window_frames > 0 && (frame_index % s_stream.log_window_frames) == 0);
+}
+
+static uint32_t sqrt_u64_floor(uint64_t value)
+{
+    uint32_t low = 0;
+    uint32_t high = 65535;
+    uint32_t result = 0;
+
+    while (low <= high) {
+        uint32_t mid = low + ((high - low) / 2);
+        uint64_t square = (uint64_t)mid * (uint64_t)mid;
+        if (square <= value) {
+            result = mid;
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    return result;
+}
+
+static void log_direct_capture_pcm_stats(const uint8_t *pcm_frame, size_t len)
+{
+    if (pcm_frame == NULL || len < sizeof(int16_t) || !should_log_frame(s_stream.capture_frames)) {
+        return;
+    }
+
+    const int16_t *samples = (const int16_t *)pcm_frame;
+    const size_t sample_count = len / sizeof(int16_t);
+    int16_t pcm_min = INT16_MAX;
+    int16_t pcm_max = INT16_MIN;
+    uint32_t zero_samples = 0;
+    uint32_t clip_samples = 0;
+    uint64_t sum_squares = 0;
+
+    for (size_t i = 0; i < sample_count; ++i) {
+        const int16_t sample = samples[i];
+        const int32_t sample32 = sample;
+        if (sample < pcm_min) {
+            pcm_min = sample;
+        }
+        if (sample > pcm_max) {
+            pcm_max = sample;
+        }
+        if (sample == 0) {
+            zero_samples++;
+        }
+        if (sample == INT16_MIN || sample == INT16_MAX) {
+            clip_samples++;
+        }
+        sum_squares += (uint64_t)(sample32 * sample32);
+    }
+
+    const uint32_t pcm_rms = sqrt_u64_floor(sum_squares / sample_count);
+    ESP_LOGI(TAG,
+             "direct capture pcm stats frames=%u bytes=%u pcm_min=%d pcm_max=%d pcm_rms=%u zero_samples=%u all_zero=%d clip_samples=%u current_sample_rate=%d",
+             (unsigned int)s_stream.capture_frames,
+             (unsigned int)len,
+             (int)pcm_min,
+             (int)pcm_max,
+             (unsigned int)pcm_rms,
+             (unsigned int)zero_samples,
+             zero_samples == sample_count,
+             (unsigned int)clip_samples,
+             bsp_audio_get_current_sample_rate());
 }
 
 static void accum_reset(pcm_accum_t *accum, uint8_t *storage, size_t capacity)
@@ -311,12 +379,13 @@ void audio_opus_stream_log_watermarks(const char *label)
 {
     const char *name = (label != NULL && label[0] != '\0') ? label : "audio_opus_stream";
     ESP_LOGI(TAG,
-             "%s runtime: running=%d uplink=%d pending_downlink=%u tx_frames=%u rx_frames=%u decoded_frames=%u playback_failures=%u uplink_drops=%u downlink_drops=%u internal_free=%u internal_largest=%u spiram_free=%u spiram_largest=%u encoder_stack_free_bytes=%u decoder_stack_free_bytes=%u capture_stack_free_bytes=%u",
+             "%s runtime: running=%d uplink=%d pending_downlink=%u tx_frames=%u capture_frames=%u rx_frames=%u decoded_frames=%u playback_failures=%u uplink_drops=%u downlink_drops=%u internal_free=%u internal_largest=%u spiram_free=%u spiram_largest=%u encoder_stack_free_bytes=%u decoder_stack_free_bytes=%u capture_stack_free_bytes=%u",
              name,
              s_stream.running,
              s_stream.uplink_enabled,
              (unsigned int)s_stream.downlink_pending_frames,
              (unsigned int)s_stream.tx_frames,
+             (unsigned int)s_stream.capture_frames,
              (unsigned int)s_stream.rx_frames,
              (unsigned int)s_stream.decoded_frames,
              (unsigned int)s_stream.playback_failures,
@@ -501,9 +570,10 @@ esp_err_t audio_opus_stream_stop(void)
     s_stream.user_ctx = NULL;
 
     ESP_LOGI(TAG,
-             "opus stream stopped tx_frames=%u tx_bytes=%u rx_frames=%u decoded_frames=%u playback_failures=%u capture_failures=%u uplink drop count=%u downlink drop count=%u free heap=%u minimum free heap=%u",
+             "opus stream stopped tx_frames=%u tx_bytes=%u capture_frames=%u rx_frames=%u decoded_frames=%u playback_failures=%u capture_failures=%u uplink drop count=%u downlink drop count=%u free heap=%u minimum free heap=%u",
              (unsigned int)s_stream.tx_frames,
              (unsigned int)s_stream.tx_bytes,
+             (unsigned int)s_stream.capture_frames,
              (unsigned int)s_stream.rx_frames,
              (unsigned int)s_stream.decoded_frames,
              (unsigned int)s_stream.playback_failures,
@@ -670,6 +740,9 @@ static void direct_capture_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(AUDIO_OPUS_STREAM_CAPTURE_IDLE_MS));
             continue;
         }
+
+        s_stream.capture_frames++;
+        log_direct_capture_pcm_stats(pcm_frame, s_stream.pcm_frame_bytes);
 
         esp_err_t err = audio_opus_stream_feed_pcm(pcm_frame, s_stream.pcm_frame_bytes);
         if (err != ESP_OK && err != ESP_ERR_TIMEOUT && err != ESP_ERR_INVALID_STATE) {
