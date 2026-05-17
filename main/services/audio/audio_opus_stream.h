@@ -26,10 +26,18 @@ typedef struct {
     int decoder_output_sample_rate;
 } audio_opus_stream_config_t;
 
+typedef struct {
+    uint32_t tx_frames;
+    uint32_t tx_bytes;
+    uint32_t capture_frames;
+    uint32_t uplink_drop_count;
+} audio_opus_stream_stats_t;
+
 esp_err_t audio_opus_stream_start(const audio_opus_stream_config_t *config);
 esp_err_t audio_opus_stream_stop(void);
 esp_err_t audio_opus_stream_set_uplink_enabled(bool enabled);
 bool audio_opus_stream_is_uplink_enabled(void);
+void audio_opus_stream_get_stats(audio_opus_stream_stats_t *out_stats);
 esp_err_t audio_opus_stream_close_decoder(void);
 esp_err_t audio_opus_stream_wait_downlink_idle(uint32_t timeout_ms);
 esp_err_t audio_opus_stream_feed_pcm(const uint8_t *pcm, size_t len);

@@ -84,6 +84,7 @@ def check_sw3_long_press_events(failures: list[str]) -> None:
 def check_manual_listen_state_machine(failures: list[str]) -> None:
     ws_source = read("main/xiaozhi/xiaozhi_ws.c")
     trigger_body = function_body(ws_source, "xiaozhi_ws_trigger_listen")
+    start_body = function_body(ws_source, "start_manual_listen_now")
     stop_body = function_body(ws_source, "xiaozhi_ws_stop_listen")
     hello_body = function_body(ws_source, "handle_server_hello")
     start_audio_body = function_body(ws_source, "start_audio_stream")
@@ -92,21 +93,21 @@ def check_manual_listen_state_machine(failures: list[str]) -> None:
             "xiaozhi_ws_trigger_listen must not delegate manual button start to wake detection", failures)
     require("XIAOZHI_WS_LISTEN_MODE_BUTTON" in trigger_body,
             "xiaozhi_ws_trigger_listen must handle button listen mode explicitly", failures)
-    require('send_listen_state("start", "manual")' in trigger_body,
+    require('send_listen_state("start", "manual")' in start_body,
             "manual listen start must send state=start mode=manual", failures)
-    require("AUDIO_OPUS_PCM_SOURCE_DIRECT_CODEC" in trigger_body,
+    require("AUDIO_OPUS_PCM_SOURCE_DIRECT_CODEC" in start_body,
             "manual listen start must use direct codec capture", failures)
-    require("AUDIO_OPUS_SAMPLE_RATE" in trigger_body and "bsp_audio_open_with_sample_rate" in ws_source,
+    require("AUDIO_OPUS_SAMPLE_RATE" in start_body and "bsp_audio_open_with_sample_rate" in ws_source,
             "manual listen start must switch the audio path to the 16 kHz Opus uplink rate", failures)
-    require("audio_opus_stream_wait_downlink_idle" in trigger_body,
+    require("audio_opus_stream_wait_downlink_idle" in start_body,
             "manual listen start must drain downlink before switching the shared audio path", failures)
     require("XIAOZHI_WS_STATE_SPEAKING" in trigger_body and "s_waiting_tts_stop" in trigger_body,
             "manual listen start must ignore requests while TTS is speaking or waiting for TTS stop", failures)
-    require("XIAOZHI_WS_STATE_LISTENING" in trigger_body,
+    require("XIAOZHI_WS_STATE_LISTENING" in start_body,
             "manual listen start must enter LISTENING after enabling uplink", failures)
-    require("audio_opus_stream_set_uplink_enabled(true)" in trigger_body,
+    require("audio_opus_stream_set_uplink_enabled(true)" in start_body,
             "manual listen start must enable the Opus uplink", failures)
-    require_before(trigger_body,
+    require_before(start_body,
                    "set_state(XIAOZHI_WS_STATE_LISTENING)",
                    "audio_opus_stream_set_uplink_enabled(true)",
                    "manual listen start must enter LISTENING before enabling uplink to avoid dropping early Opus frames",
@@ -130,8 +131,8 @@ def check_manual_listen_state_machine(failures: list[str]) -> None:
             "listen stop must send the protocol listen stop payload", failures)
     require("AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED" in stop_body,
             "listen stop must restore the downlink playback stream after direct capture", failures)
-    require("XIAOZHI_WS_STATE_WAITING_RESPONSE" in stop_body,
-            "listen stop must enter WAITING_RESPONSE when the stop payload is sent", failures)
+    require("set_waiting_response" in stop_body,
+            "listen stop must enter WAITING_RESPONSE through timeout recovery when the stop payload is sent", failures)
     require("decoder_output_sample_rate = resolve_decoder_output_sample_rate()" in start_audio_body,
             "downlink decoder sample rate must continue to follow server hello", failures)
 

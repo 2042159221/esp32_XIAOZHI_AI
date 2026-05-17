@@ -32,6 +32,7 @@ typedef enum {
 esp_err_t xiaozhi_ws_start(void);
 esp_err_t xiaozhi_ws_stop(void);
 xiaozhi_ws_state_t xiaozhi_ws_get_state(void);
+esp_err_t xiaozhi_ws_request_ready(void);
 esp_err_t xiaozhi_ws_trigger_listen(xiaozhi_ws_listen_mode_t mode);
 esp_err_t xiaozhi_ws_trigger_detect_text(const char *text);
 esp_err_t xiaozhi_ws_on_wake_detected(void);

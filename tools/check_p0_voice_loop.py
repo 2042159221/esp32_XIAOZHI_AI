@@ -157,10 +157,10 @@ def check_detect_text_request(failures: list[str]) -> None:
             "xiaozhi_ws_trigger_detect_text must build listen detect JSON", failures)
     require("(void)text;" not in body,
             "xiaozhi_ws_trigger_detect_text must not ignore text", failures)
-    require("ensure_websocket_ready()" in body,
-            "detect text must wait for websocket READY before sending", failures)
-    require("XIAOZHI_WS_STATE_WAITING_RESPONSE" in body,
-            "detect text must transition to WAITING_RESPONSE after send", failures)
+    require("xiaozhi_ws_request_ready()" in body and "wait_for_ready(" not in body,
+            "detect text must request websocket READY without blocking app_controller", failures)
+    require("set_waiting_response" in body,
+            "detect text must transition to WAITING_RESPONSE through timeout recovery", failures)
 
 
 def check_ws_state_machine(failures: list[str]) -> None:

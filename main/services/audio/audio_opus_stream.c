@@ -400,6 +400,18 @@ void audio_opus_stream_log_watermarks(const char *label)
              (unsigned int)s_stream.capture_stack_watermark_bytes);
 }
 
+void audio_opus_stream_get_stats(audio_opus_stream_stats_t *out_stats)
+{
+    if (out_stats == NULL) {
+        return;
+    }
+
+    out_stats->tx_frames = s_stream.tx_frames;
+    out_stats->tx_bytes = s_stream.tx_bytes;
+    out_stats->capture_frames = s_stream.capture_frames;
+    out_stats->uplink_drop_count = s_stream.uplink_drop_count;
+}
+
 esp_err_t audio_opus_stream_start(const audio_opus_stream_config_t *config)
 {
     ESP_RETURN_ON_FALSE(config != NULL && config->send_cb != NULL, ESP_ERR_INVALID_ARG, TAG, "invalid stream config");

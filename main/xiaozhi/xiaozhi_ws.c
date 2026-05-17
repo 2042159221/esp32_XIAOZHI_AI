@@ -17,6 +17,7 @@
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/timers.h"
 #include "sdkconfig.h"
 #include "xiaozhi_device.h"
 #include "xiaozhi_handle.h"
@@ -31,7 +32,14 @@ static xiaozhi_protocol_audio_params_t s_server_audio;
 static TickType_t s_next_opus_send_tick;
 static bool s_reconnect_in_progress;
 static bool s_waiting_tts_stop;
+static bool s_pending_ptt;
+static bool s_button_down;
 static uint32_t s_binary_opus_diagnostics_frames;
+static TimerHandle_t s_waiting_response_timer;
+static xiaozhi_ws_state_t s_waiting_response_last_state = XIAOZHI_WS_STATE_DISCONNECTED;
+static audio_opus_stream_stats_t s_waiting_response_stats;
+static TickType_t s_manual_listen_start_tick;
+static uint32_t s_waiting_response_timeout_ms;
 
 static void websocket_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
 static esp_err_t wait_for_ready(uint32_t timeout_ms);
@@ -39,13 +47,23 @@ static void cleanup_websocket_client(void);
 static void handle_websocket_write_failure(const char *stage, int sent, size_t expected_len);
 static void stop_opus_audio_stream(void);
 static esp_err_t ensure_websocket_ready(void);
+static esp_err_t start_manual_listen_now(void);
+static void start_pending_ptt_if_ready(void);
 static esp_err_t send_listen_state(const char *state, const char *mode);
 static esp_err_t start_audio_stream_with_rate(audio_opus_pcm_source_t pcm_source, int decoder_output_sample_rate);
 static esp_err_t restore_downlink_audio_stream(audio_opus_pcm_source_t pcm_source);
 static void reset_session_flags(void);
+static void waiting_response_timeout_cb(TimerHandle_t timer);
+static void set_waiting_response(xiaozhi_ws_state_t last_state, uint32_t timeout_ms, const audio_opus_stream_stats_t *stats);
+static void cancel_waiting_response_timer(void);
+static void note_waiting_response_activity(const char *label);
 
 #define XIAOZHI_WS_READY_TIMEOUT_MS 10000
 #define XIAOZHI_WS_READY_POLL_MS 100
+#define XIAOZHI_WS_RESPONSE_TIMEOUT_MS 6500
+#define XIAOZHI_WS_SHORT_RESPONSE_TIMEOUT_MS 1500
+#define XIAOZHI_WS_MIN_LISTEN_TX_FRAMES 8
+#define XIAOZHI_WS_MIN_LISTEN_MS 800
 #define XIAOZHI_WS_OPUS_SEND_INTERVAL_MS XIAOZHI_PROTOCOL_AUDIO_FRAME_DURATION_MS
 #define XIAOZHI_WS_OPUS_SEND_TIMEOUT_MS 1000
 #define XIAOZHI_WS_DOWNLINK_DRAIN_TIMEOUT_MS 1200
@@ -94,6 +112,12 @@ static void reset_session_flags(void)
     s_waiting_tts_stop = false;
     s_next_opus_send_tick = 0;
     s_binary_opus_diagnostics_frames = 0;
+    s_pending_ptt = false;
+    s_button_down = false;
+    s_manual_listen_start_tick = 0;
+    s_waiting_response_timeout_ms = 0;
+    memset(&s_waiting_response_stats, 0, sizeof(s_waiting_response_stats));
+    cancel_waiting_response_timer();
 }
 
 static bool should_log_binary_opus_diagnostics(void)
@@ -132,6 +156,81 @@ static void log_heap_stats(const char *label)
              (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
              (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
              (unsigned int)esp_get_minimum_free_heap_size());
+}
+
+static bool ensure_waiting_response_timer(uint32_t timeout_ms)
+{
+    if (s_waiting_response_timer == NULL) {
+        s_waiting_response_timer = xTimerCreate("xz_resp_to",
+                                                pdMS_TO_TICKS(timeout_ms),
+                                                pdFALSE,
+                                                NULL,
+                                                waiting_response_timeout_cb);
+        if (s_waiting_response_timer == NULL) {
+            ESP_LOGE(TAG, "create WAITING_RESPONSE timer failed");
+            return false;
+        }
+    }
+
+    return xTimerChangePeriod(s_waiting_response_timer, pdMS_TO_TICKS(timeout_ms), 0) == pdPASS;
+}
+
+static void cancel_waiting_response_timer(void)
+{
+    if (s_waiting_response_timer != NULL) {
+        (void)xTimerStop(s_waiting_response_timer, 0);
+    }
+}
+
+static void set_waiting_response(xiaozhi_ws_state_t last_state, uint32_t timeout_ms, const audio_opus_stream_stats_t *stats)
+{
+    s_waiting_response_last_state = last_state;
+    s_waiting_response_timeout_ms = timeout_ms;
+    if (stats != NULL) {
+        s_waiting_response_stats = *stats;
+    } else {
+        memset(&s_waiting_response_stats, 0, sizeof(s_waiting_response_stats));
+    }
+
+    set_state(XIAOZHI_WS_STATE_WAITING_RESPONSE);
+    if (!ensure_waiting_response_timer(timeout_ms)) {
+        ESP_LOGW(TAG, "WAITING_RESPONSE timer unavailable, recover to READY");
+        set_state(XIAOZHI_WS_STATE_READY);
+    }
+}
+
+static void note_waiting_response_activity(const char *label)
+{
+    if (s_ws_state != XIAOZHI_WS_STATE_WAITING_RESPONSE) {
+        return;
+    }
+
+    ESP_LOGI(TAG,
+             "WAITING_RESPONSE activity=%s refresh_timeout=%u ms",
+             label != NULL ? label : "<unknown>",
+             (unsigned int)XIAOZHI_WS_RESPONSE_TIMEOUT_MS);
+    (void)ensure_waiting_response_timer(XIAOZHI_WS_RESPONSE_TIMEOUT_MS);
+}
+
+static void waiting_response_timeout_cb(TimerHandle_t timer)
+{
+    (void)timer;
+    if (s_ws_state != XIAOZHI_WS_STATE_WAITING_RESPONSE) {
+        return;
+    }
+
+    ESP_LOGW(TAG,
+             "WAITING_RESPONSE timeout after %u ms tx_frames=%u tx_bytes=%u last_state=%s heap internal_free=%u internal_largest=%u spiram_free=%u spiram_largest=%u",
+             (unsigned int)s_waiting_response_timeout_ms,
+             (unsigned int)s_waiting_response_stats.tx_frames,
+             (unsigned int)s_waiting_response_stats.tx_bytes,
+             state_name(s_waiting_response_last_state),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    s_waiting_tts_stop = false;
+    set_state(XIAOZHI_WS_STATE_READY);
 }
 
 static void log_token_summary(const char *token)
@@ -418,12 +517,14 @@ static void handle_server_hello(const xiaozhi_protocol_msg_t *msg)
     set_state(XIAOZHI_WS_STATE_READY);
     log_heap_stats("WS READY");
     audio_opus_stream_log_watermarks("WS READY");
+    start_pending_ptt_if_ready();
 }
 
 static void handle_tts(const xiaozhi_protocol_msg_t *msg)
 {
     if (strcmp(msg->state, "start") == 0) {
         ESP_LOGI(TAG, "tts start");
+        cancel_waiting_response_timer();
         s_waiting_tts_stop = true;
         (void)audio_opus_stream_set_uplink_enabled(false);
         set_state(XIAOZHI_WS_STATE_SPEAKING);
@@ -434,6 +535,7 @@ static void handle_tts(const xiaozhi_protocol_msg_t *msg)
 
     if (strcmp(msg->state, "stop") == 0) {
         ESP_LOGI(TAG, "tts stop");
+        cancel_waiting_response_timer();
         (void)audio_opus_stream_set_uplink_enabled(false);
         (void)audio_opus_stream_wait_downlink_idle(XIAOZHI_WS_DOWNLINK_DRAIN_TIMEOUT_MS);
         (void)audio_opus_stream_close_decoder();
@@ -446,6 +548,7 @@ static void handle_tts(const xiaozhi_protocol_msg_t *msg)
     }
 
     ESP_LOGI(TAG, "tts state=%s", msg->state[0] != '\0' ? msg->state : "<empty>");
+    note_waiting_response_activity("tts");
 }
 
 static void handle_server_message(const char *json, size_t len)
@@ -463,6 +566,7 @@ static void handle_server_message(const char *json, size_t len)
         break;
     case XIAOZHI_PROTOCOL_MSG_STT:
         ESP_LOGI(TAG, "stt text=%s", msg.text[0] != '\0' ? msg.text : "<empty>");
+        note_waiting_response_activity("stt");
         break;
     case XIAOZHI_PROTOCOL_MSG_TTS:
         ESP_LOGI(TAG, "tts state=%s text=%s session_id=%s",
@@ -473,6 +577,7 @@ static void handle_server_message(const char *json, size_t len)
         break;
     case XIAOZHI_PROTOCOL_MSG_LLM:
         ESP_LOGI(TAG, "llm text=%s", msg.text[0] != '\0' ? msg.text : "<empty>");
+        note_waiting_response_activity("llm");
         break;
     case XIAOZHI_PROTOCOL_MSG_MCP:
         ESP_LOGI(TAG, "mcp message received");
@@ -494,6 +599,7 @@ static void handle_binary_opus(const uint8_t *data, size_t len)
 {
     ESP_LOGI(TAG, "binary opus received len=%u", (unsigned int)len);
     if (s_ws_state == XIAOZHI_WS_STATE_LISTENING || s_ws_state == XIAOZHI_WS_STATE_WAITING_RESPONSE) {
+        cancel_waiting_response_timer();
         s_waiting_tts_stop = true;
         (void)audio_opus_stream_set_uplink_enabled(false);
         set_state(XIAOZHI_WS_STATE_SPEAKING);
@@ -673,6 +779,23 @@ bool xiaozhi_ws_is_ready(void)
     return is_ready_or_busy_state(s_ws_state) && s_ws_state != XIAOZHI_WS_STATE_SPEAKING;
 }
 
+esp_err_t xiaozhi_ws_request_ready(void)
+{
+    if (is_ready_or_busy_state(s_ws_state) ||
+        s_ws_state == XIAOZHI_WS_STATE_CONNECTING ||
+        s_ws_state == XIAOZHI_WS_STATE_WS_CONNECTED ||
+        s_ws_state == XIAOZHI_WS_STATE_HELLO_SENT) {
+        return ESP_OK;
+    }
+
+    if (s_ws_state == XIAOZHI_WS_STATE_DISCONNECTED) {
+        return xiaozhi_ws_start();
+    }
+
+    ESP_LOGW(TAG, "websocket READY request ignored state=%s", state_name(s_ws_state));
+    return ESP_ERR_INVALID_STATE;
+}
+
 static esp_err_t wait_for_ready(uint32_t timeout_ms)
 {
     const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
@@ -699,12 +822,15 @@ esp_err_t xiaozhi_ws_trigger_listen(xiaozhi_ws_listen_mode_t mode)
         return err;
     }
 
+    s_button_down = true;
+
     if (s_ws_state == XIAOZHI_WS_STATE_LISTENING) {
         ESP_LOGI(TAG, "manual listen start ignored because already listening");
         return ESP_OK;
     }
 
     if (s_ws_state == XIAOZHI_WS_STATE_SPEAKING || s_waiting_tts_stop) {
+        s_pending_ptt = false;
         ESP_LOGW(TAG,
                  "manual listen start ignored while TTS is active state=%s waiting_tts_stop=%d",
                  state_name(s_ws_state),
@@ -712,12 +838,24 @@ esp_err_t xiaozhi_ws_trigger_listen(xiaozhi_ws_listen_mode_t mode)
         return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t err = ensure_websocket_ready();
+    if (s_ws_state == XIAOZHI_WS_STATE_READY || s_ws_state == XIAOZHI_WS_STATE_WAKE_DETECTED) {
+        s_pending_ptt = false;
+        return start_manual_listen_now();
+    }
+
+    s_pending_ptt = true;
+    esp_err_t err = xiaozhi_ws_request_ready();
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "manual listen start websocket not ready: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "manual listen pending but websocket READY request failed: %s", esp_err_to_name(err));
         return err;
     }
 
+    ESP_LOGI(TAG, "manual listen pending until READY state=%s button_down=%d", state_name(s_ws_state), s_button_down);
+    return ESP_OK;
+}
+
+static esp_err_t start_manual_listen_now(void)
+{
     if (s_session_id[0] == '\0') {
         ESP_LOGW(TAG, "manual listen start ignored because session_id is missing");
         return ESP_ERR_INVALID_STATE;
@@ -737,7 +875,7 @@ esp_err_t xiaozhi_ws_trigger_listen(xiaozhi_ws_listen_mode_t mode)
              "manual listen switch audio path current_sample_rate=%d target_sample_rate=%d",
              bsp_audio_get_current_sample_rate(),
              AUDIO_OPUS_SAMPLE_RATE);
-    err = bsp_audio_open_with_sample_rate(AUDIO_OPUS_SAMPLE_RATE);
+    esp_err_t err = bsp_audio_open_with_sample_rate(AUDIO_OPUS_SAMPLE_RATE);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "switch audio path for manual capture failed: %s", esp_err_to_name(err));
         return err;
@@ -760,6 +898,8 @@ esp_err_t xiaozhi_ws_trigger_listen(xiaozhi_ws_listen_mode_t mode)
     }
 
     s_next_opus_send_tick = 0;
+    s_manual_listen_start_tick = xTaskGetTickCount();
+    cancel_waiting_response_timer();
     set_state(XIAOZHI_WS_STATE_LISTENING);
 
     err = audio_opus_stream_set_uplink_enabled(true);
@@ -767,7 +907,12 @@ esp_err_t xiaozhi_ws_trigger_listen(xiaozhi_ws_listen_mode_t mode)
         ESP_LOGW(TAG, "manual listen uplink enable failed: %s", esp_err_to_name(err));
         (void)send_listen_state("stop", "manual");
         esp_err_t restore_err = restore_downlink_audio_stream(AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED);
-        set_state(restore_err == ESP_OK ? XIAOZHI_WS_STATE_WAITING_RESPONSE : XIAOZHI_WS_STATE_DISCONNECTED);
+        if (restore_err == ESP_OK) {
+            audio_opus_stream_stats_t stats = {0};
+            set_waiting_response(XIAOZHI_WS_STATE_LISTENING, XIAOZHI_WS_SHORT_RESPONSE_TIMEOUT_MS, &stats);
+        } else {
+            set_state(XIAOZHI_WS_STATE_DISCONNECTED);
+        }
         return err;
     }
 
@@ -776,15 +921,34 @@ esp_err_t xiaozhi_ws_trigger_listen(xiaozhi_ws_listen_mode_t mode)
     return ESP_OK;
 }
 
-static esp_err_t ensure_websocket_ready(void)
+static void start_pending_ptt_if_ready(void)
 {
-    if (is_ready_or_busy_state(s_ws_state)) {
-        return ESP_OK;
+    if (!s_pending_ptt) {
+        return;
     }
 
-    if (s_ws_state == XIAOZHI_WS_STATE_DISCONNECTED) {
-        ESP_RETURN_ON_ERROR(xiaozhi_ws_start(), TAG, "start websocket failed");
+    if (!s_button_down) {
+        ESP_LOGI(TAG, "manual listen pending canceled before READY");
+        s_pending_ptt = false;
+        return;
     }
+
+    if (s_ws_state != XIAOZHI_WS_STATE_READY) {
+        ESP_LOGI(TAG, "manual listen pending waits for READY state=%s", state_name(s_ws_state));
+        return;
+    }
+
+    s_pending_ptt = false;
+    ESP_LOGI(TAG, "manual listen pending accepted after READY button_down=%d", s_button_down);
+    esp_err_t err = start_manual_listen_now();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "manual listen pending start failed: %s", esp_err_to_name(err));
+    }
+}
+
+static esp_err_t ensure_websocket_ready(void)
+{
+    ESP_RETURN_ON_ERROR(xiaozhi_ws_request_ready(), TAG, "request websocket READY failed");
 
     return wait_for_ready(XIAOZHI_WS_READY_TIMEOUT_MS);
 }
@@ -881,7 +1045,6 @@ esp_err_t xiaozhi_ws_on_vad_state(bool speech)
         ESP_LOGI(TAG, "vad silence -> listen stop");
         (void)audio_opus_stream_set_uplink_enabled(false);
         (void)xiaozhi_ws_stop_listen();
-        set_state(XIAOZHI_WS_STATE_WAITING_RESPONSE);
     }
     return ESP_OK;
 }
@@ -903,10 +1066,13 @@ esp_err_t xiaozhi_ws_trigger_detect_text(const char *text)
         return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t err = ensure_websocket_ready();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "detect text websocket not ready: %s", esp_err_to_name(err));
-        return err;
+    if (s_ws_state != XIAOZHI_WS_STATE_READY && s_ws_state != XIAOZHI_WS_STATE_WAKE_DETECTED) {
+        esp_err_t ready_err = xiaozhi_ws_request_ready();
+        ESP_LOGW(TAG,
+                 "detect text ignored until READY state=%s request_ready=%s",
+                 state_name(s_ws_state),
+                 esp_err_to_name(ready_err));
+        return ready_err == ESP_OK ? ESP_ERR_INVALID_STATE : ready_err;
     }
 
     if (!can_send_business_message() ||
@@ -923,9 +1089,9 @@ esp_err_t xiaozhi_ws_trigger_detect_text(const char *text)
     char *json = NULL;
     ESP_RETURN_ON_ERROR(xiaozhi_protocol_build_listen_detect_json(s_session_id, text, &json), TAG, "build listen detect failed");
 
-    err = send_text_json(json, "listen detect");
+    esp_err_t err = send_text_json(json, "listen detect");
     if (err == ESP_OK) {
-        set_state(XIAOZHI_WS_STATE_WAITING_RESPONSE);
+        set_waiting_response(s_ws_state, XIAOZHI_WS_RESPONSE_TIMEOUT_MS, NULL);
         log_heap_stats("listen detect sent");
     } else {
         set_state(XIAOZHI_WS_STATE_DISCONNECTED);
@@ -935,8 +1101,33 @@ esp_err_t xiaozhi_ws_trigger_detect_text(const char *text)
 
 esp_err_t xiaozhi_ws_stop_listen(void)
 {
-    if (s_ws_state != XIAOZHI_WS_STATE_LISTENING && s_ws_state != XIAOZHI_WS_STATE_WAKE_DETECTED) {
+    s_button_down = false;
+    if (s_ws_state != XIAOZHI_WS_STATE_LISTENING) {
+        if (s_pending_ptt) {
+            ESP_LOGI(TAG, "manual listen pending canceled by release state=%s", state_name(s_ws_state));
+            s_pending_ptt = false;
+        }
+        if (s_ws_state == XIAOZHI_WS_STATE_WAKE_DETECTED) {
+            set_state(XIAOZHI_WS_STATE_READY);
+        }
         return ESP_OK;
+    }
+
+    s_pending_ptt = false;
+    audio_opus_stream_stats_t stats = {0};
+    audio_opus_stream_get_stats(&stats);
+    uint32_t listen_ms = 0;
+    if (s_manual_listen_start_tick != 0) {
+        listen_ms = (uint32_t)(pdTICKS_TO_MS(xTaskGetTickCount() - s_manual_listen_start_tick));
+    }
+    uint32_t response_timeout_ms = XIAOZHI_WS_RESPONSE_TIMEOUT_MS;
+    if (stats.tx_frames < XIAOZHI_WS_MIN_LISTEN_TX_FRAMES || listen_ms < XIAOZHI_WS_MIN_LISTEN_MS) {
+        response_timeout_ms = XIAOZHI_WS_SHORT_RESPONSE_TIMEOUT_MS;
+        ESP_LOGW(TAG,
+                 "manual listen too short tx_frames=%u listen_ms=%u, response timeout=%u ms",
+                 (unsigned int)stats.tx_frames,
+                 (unsigned int)listen_ms,
+                 (unsigned int)response_timeout_ms);
     }
 
     (void)audio_opus_stream_set_uplink_enabled(false);
@@ -947,7 +1138,7 @@ esp_err_t xiaozhi_ws_stop_listen(void)
     const audio_opus_pcm_source_t restore_source = AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED;
     esp_err_t restore_err = restore_downlink_audio_stream(restore_source);
     if (err == ESP_OK && restore_err == ESP_OK) {
-        set_state(XIAOZHI_WS_STATE_WAITING_RESPONSE);
+        set_waiting_response(XIAOZHI_WS_STATE_LISTENING, response_timeout_ms, &stats);
         log_heap_stats("listen stop manual");
         audio_opus_stream_log_watermarks("listen stop manual");
         return ESP_OK;
