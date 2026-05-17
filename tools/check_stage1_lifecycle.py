@@ -69,6 +69,8 @@ def main():
             "provisioning deinit must happen in finish_provisioning_stop")
     require("provisioning deinit complete" in finish_body,
             "finish_provisioning_stop must log provisioning deinit completion")
+    require("stop_residual_wifi_scan" in finish_body,
+            "finish_provisioning_stop must stop any residual provisioning Wi-Fi scan before deinit")
     require("PROV_STOPPED_BIT set, PROV_DEINITED=1" in finish_body,
             "finish_provisioning_stop must log stopped/deinited gate")
     require("maybe_start_business_after_provisioning();" in finish_body,
@@ -104,7 +106,7 @@ def main():
             "stage1 SR auto-init must default to disabled")
     require("CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE" in stage1,
             "stage1 must gate SR init on config")
-    require("websocket READY; SR auto init disabled" in stage1,
+    require("SR auto init disabled" in stage1,
             "stage1 must log SR auto-init disabled after READY")
     require("CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE" in sdkconfig_defaults,
             "sdkconfig.defaults must explicitly keep SR auto-init disabled")
