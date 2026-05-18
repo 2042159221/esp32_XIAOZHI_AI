@@ -178,10 +178,72 @@ static void reset_session_flags(void)
     s_pending_ptt = false;
     s_button_down = false;
     s_manual_listen_start_tick = 0;
+    s_listen_start_time_us = 0;
+    s_vad_silence_start_time_us = 0;
+    s_active_listen_mode = XIAOZHI_WS_LISTEN_MODE_AUTO;
+    s_vad_muted_by_playback = false;
     s_waiting_response_timeout_ms = 0;
     memset(&s_waiting_response_stats, 0, sizeof(s_waiting_response_stats));
     cancel_waiting_response_timer();
     cancel_speaking_timeout_timer();
+    cancel_auto_endpoint_timers();
+    cancel_tts_resume_timer();
+}
+
+static const char *listen_mode_name(xiaozhi_ws_listen_mode_t mode)
+{
+    switch (mode) {
+    case XIAOZHI_WS_LISTEN_MODE_AUTO:
+        return "auto";
+    case XIAOZHI_WS_LISTEN_MODE_BUTTON:
+        return "manual";
+    case XIAOZHI_WS_LISTEN_MODE_WAKE:
+        return "wake";
+    default:
+        return "unknown";
+    }
+}
+
+static void mark_listen_started(xiaozhi_ws_listen_mode_t mode)
+{
+    s_active_listen_mode = mode;
+    s_listen_start_time_us = esp_timer_get_time();
+    s_vad_silence_start_time_us = 0;
+    s_manual_listen_start_tick = xTaskGetTickCount();
+    ESP_LOGI(TAG,
+             "listen timing start mode=%s start_us=%lld task=%s",
+             listen_mode_name(mode),
+             (long long)s_listen_start_time_us,
+             pcTaskGetName(NULL));
+}
+
+static uint32_t elapsed_ms_since_us(int64_t start_us)
+{
+    if (start_us <= 0) {
+        return 0;
+    }
+    int64_t delta_us = esp_timer_get_time() - start_us;
+    if (delta_us <= 0) {
+        return 0;
+    }
+    return (uint32_t)(delta_us / 1000);
+}
+
+static uint32_t current_listen_ms(void)
+{
+    return elapsed_ms_since_us(s_listen_start_time_us);
+}
+
+static uint32_t current_silence_ms(void)
+{
+    return elapsed_ms_since_us(s_vad_silence_start_time_us);
+}
+
+static bool auto_listen_endpoint_ready(uint32_t listen_ms, uint32_t silence_ms, uint32_t tx_frames)
+{
+    return listen_ms >= XIAOZHI_WS_MIN_LISTEN_MS &&
+           silence_ms >= XIAOZHI_WS_AUTO_SILENCE_STOP_MS &&
+           tx_frames >= XIAOZHI_WS_MIN_LISTEN_TX_FRAMES;
 }
 
 static bool should_log_binary_opus_diagnostics(void)
