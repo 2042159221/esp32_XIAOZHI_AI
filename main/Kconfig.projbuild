@@ -125,6 +125,14 @@ menu "Xiaozhi Agent Stage1 Configuration"
             handshake reaches READY. Keep this disabled while isolating
             SR/AFE initialization crashes.
 
+    config XIAOZHI_STAGE1_WAKE_ONLY_SR_ENABLE
+        bool "Start WakeNet-only SR after WebSocket READY"
+        default n
+        help
+            Start WakeNet-only SR after the Xiaozhi WebSocket handshake
+            reaches READY. This keeps VAD and PCM uplink detached so the
+            wake path can be validated without entering automatic dialogue.
+
     config XIAOZHI_AUDIO_DIAG_ENABLE
         bool "Build audio diagnostics helpers"
         default n

@@ -58,6 +58,9 @@ static portMUX_TYPE s_ota_task_lock = portMUX_INITIALIZER_UNLOCKED;
 
 
 static void log_token_len(void);
+#if CONFIG_XIAOZHI_STAGE1_WAKE_ONLY_SR_ENABLE
+static void sr_wake_only_cb(void *user_ctx);
+#endif
 #if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
 static void sr_wake_cb(void *user_ctx);
 static void sr_vad_state_cb(vad_state_t state, void *user_ctx);
@@ -143,7 +146,25 @@ static esp_err_t enter_ai_after_activation(void)
         return err;
     }
 
-#if !CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+#if CONFIG_XIAOZHI_STAGE1_WAKE_ONLY_SR_ENABLE
+    const xiaozhi_sr_callbacks_t sr_callbacks = {
+        .vad_state_cb = NULL,
+        .wake_cb = sr_wake_only_cb,
+        .pcm_output_cb = NULL,
+        .user_ctx = NULL,
+    };
+
+    err = xiaozhi_sr_init(&sr_callbacks);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "start wake-only sr failed: %s", esp_err_to_name(err));
+        xiaozhi_ui_show_error(UI_TEXT_CONNECT_FAILED, UI_TEXT_AI_START_FAILED);
+        return err;
+    }
+
+    ESP_LOGI(TAG, "SR wake-only init enabled");
+    return ESP_OK;
+}
+#elif !CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
     ESP_LOGI(TAG, "SR auto init disabled");
     return ESP_OK;
 }
@@ -182,6 +203,14 @@ static void log_token_len(void)
 
 }
 
+
+#if CONFIG_XIAOZHI_STAGE1_WAKE_ONLY_SR_ENABLE
+static void sr_wake_only_cb(void *user_ctx)
+{
+    (void)user_ctx;
+    ESP_LOGI(TAG, "wake word detected in wake-only mode");
+}
+#endif
 
 #if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
 static void sr_wake_cb(void *user_ctx)
