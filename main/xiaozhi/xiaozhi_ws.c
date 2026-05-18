@@ -36,6 +36,7 @@ static bool s_pending_ptt;
 static bool s_button_down;
 static uint32_t s_binary_opus_diagnostics_frames;
 static TimerHandle_t s_waiting_response_timer;
+static TimerHandle_t s_speaking_timeout_timer;
 static xiaozhi_ws_state_t s_waiting_response_last_state = XIAOZHI_WS_STATE_DISCONNECTED;
 static audio_opus_stream_stats_t s_waiting_response_stats;
 static TickType_t s_manual_listen_start_tick;
@@ -57,11 +58,16 @@ static void waiting_response_timeout_cb(TimerHandle_t timer);
 static void set_waiting_response(xiaozhi_ws_state_t last_state, uint32_t timeout_ms, const audio_opus_stream_stats_t *stats);
 static void cancel_waiting_response_timer(void);
 static void note_waiting_response_activity(const char *label);
+static void speaking_timeout_cb(TimerHandle_t timer);
+static bool ensure_speaking_timeout_timer(void);
+static void cancel_speaking_timeout_timer(void);
+static void note_speaking_activity(const char *label);
 
 #define XIAOZHI_WS_READY_TIMEOUT_MS 10000
 #define XIAOZHI_WS_READY_POLL_MS 100
 #define XIAOZHI_WS_RESPONSE_TIMEOUT_MS 6500
 #define XIAOZHI_WS_SHORT_RESPONSE_TIMEOUT_MS 1500
+#define XIAOZHI_WS_SPEAKING_IDLE_TIMEOUT_MS 30000
 #define XIAOZHI_WS_MIN_LISTEN_TX_FRAMES 8
 #define XIAOZHI_WS_MIN_LISTEN_MS 800
 #define XIAOZHI_WS_OPUS_SEND_INTERVAL_MS XIAOZHI_PROTOCOL_AUDIO_FRAME_DURATION_MS
@@ -118,6 +124,7 @@ static void reset_session_flags(void)
     s_waiting_response_timeout_ms = 0;
     memset(&s_waiting_response_stats, 0, sizeof(s_waiting_response_stats));
     cancel_waiting_response_timer();
+    cancel_speaking_timeout_timer();
 }
 
 static bool should_log_binary_opus_diagnostics(void)
@@ -205,6 +212,7 @@ static void note_waiting_response_activity(const char *label)
         return;
     }
 
+    s_waiting_response_timeout_ms = XIAOZHI_WS_RESPONSE_TIMEOUT_MS;
     ESP_LOGI(TAG,
              "WAITING_RESPONSE activity=%s refresh_timeout=%u ms",
              label != NULL ? label : "<unknown>",
@@ -231,6 +239,57 @@ static void waiting_response_timeout_cb(TimerHandle_t timer)
              (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     s_waiting_tts_stop = false;
     set_state(XIAOZHI_WS_STATE_READY);
+}
+
+static bool ensure_speaking_timeout_timer(void)
+{
+    if (s_speaking_timeout_timer == NULL) {
+        s_speaking_timeout_timer = xTimerCreate("xz_tts_idle",
+                                                pdMS_TO_TICKS(XIAOZHI_WS_SPEAKING_IDLE_TIMEOUT_MS),
+                                                pdFALSE,
+                                                NULL,
+                                                speaking_timeout_cb);
+        if (s_speaking_timeout_timer == NULL) {
+            ESP_LOGE(TAG, "create SPEAKING watchdog timer failed");
+            return false;
+        }
+    }
+
+    return xTimerChangePeriod(s_speaking_timeout_timer, pdMS_TO_TICKS(XIAOZHI_WS_SPEAKING_IDLE_TIMEOUT_MS), 0) == pdPASS;
+}
+
+static void cancel_speaking_timeout_timer(void)
+{
+    if (s_speaking_timeout_timer != NULL) {
+        (void)xTimerStop(s_speaking_timeout_timer, 0);
+    }
+}
+
+static void note_speaking_activity(const char *label)
+{
+    if (s_ws_state != XIAOZHI_WS_STATE_SPEAKING) {
+        return;
+    }
+
+    if (!ensure_speaking_timeout_timer()) {
+        ESP_LOGW(TAG, "SPEAKING watchdog unavailable activity=%s", label != NULL ? label : "<unknown>");
+    }
+}
+
+static void speaking_timeout_cb(TimerHandle_t timer)
+{
+    (void)timer;
+    if (s_ws_state != XIAOZHI_WS_STATE_SPEAKING) {
+        return;
+    }
+
+    ESP_LOGW(TAG,
+             "SPEAKING idle timeout after %u ms, recover to READY",
+             (unsigned int)XIAOZHI_WS_SPEAKING_IDLE_TIMEOUT_MS);
+    s_waiting_tts_stop = false;
+    set_state(XIAOZHI_WS_STATE_READY);
+    log_heap_stats("SPEAKING timeout");
+    audio_opus_stream_log_watermarks("SPEAKING timeout");
 }
 
 static void log_token_summary(const char *token)
@@ -528,6 +587,7 @@ static void handle_tts(const xiaozhi_protocol_msg_t *msg)
         s_waiting_tts_stop = true;
         (void)audio_opus_stream_set_uplink_enabled(false);
         set_state(XIAOZHI_WS_STATE_SPEAKING);
+        note_speaking_activity("tts start");
         log_heap_stats("TTS start");
         audio_opus_stream_log_watermarks("TTS start");
         return;
@@ -536,6 +596,7 @@ static void handle_tts(const xiaozhi_protocol_msg_t *msg)
     if (strcmp(msg->state, "stop") == 0) {
         ESP_LOGI(TAG, "tts stop");
         cancel_waiting_response_timer();
+        cancel_speaking_timeout_timer();
         (void)audio_opus_stream_set_uplink_enabled(false);
         (void)audio_opus_stream_wait_downlink_idle(XIAOZHI_WS_DOWNLINK_DRAIN_TIMEOUT_MS);
         (void)audio_opus_stream_close_decoder();
@@ -604,6 +665,7 @@ static void handle_binary_opus(const uint8_t *data, size_t len)
         (void)audio_opus_stream_set_uplink_enabled(false);
         set_state(XIAOZHI_WS_STATE_SPEAKING);
     }
+    note_speaking_activity("binary opus");
 
     esp_err_t err = audio_opus_stream_enqueue_downlink_opus(data, len);
     if (err != ESP_OK) {
@@ -1109,6 +1171,7 @@ esp_err_t xiaozhi_ws_stop_listen(void)
 {
     s_button_down = false;
     if (s_ws_state != XIAOZHI_WS_STATE_LISTENING) {
+        s_manual_listen_start_tick = 0;
         if (s_pending_ptt) {
             ESP_LOGI(TAG, "manual listen pending canceled by release state=%s", state_name(s_ws_state));
             s_pending_ptt = false;
@@ -1126,6 +1189,7 @@ esp_err_t xiaozhi_ws_stop_listen(void)
     if (s_manual_listen_start_tick != 0) {
         listen_ms = (uint32_t)(pdTICKS_TO_MS(xTaskGetTickCount() - s_manual_listen_start_tick));
     }
+    s_manual_listen_start_tick = 0;
     uint32_t response_timeout_ms = XIAOZHI_WS_RESPONSE_TIMEOUT_MS;
     if (stats.tx_frames < XIAOZHI_WS_MIN_LISTEN_TX_FRAMES || listen_ms < XIAOZHI_WS_MIN_LISTEN_MS) {
         response_timeout_ms = XIAOZHI_WS_SHORT_RESPONSE_TIMEOUT_MS;

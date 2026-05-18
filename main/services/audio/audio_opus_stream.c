@@ -378,8 +378,12 @@ static uint32_t current_task_stack_watermark(void)
 void audio_opus_stream_log_watermarks(const char *label)
 {
     const char *name = (label != NULL && label[0] != '\0') ? label : "audio_opus_stream";
+    const size_t pcm_rb_free = s_stream.pcm_rb != NULL ? xRingbufferGetCurFreeSize(s_stream.pcm_rb) : 0;
+    const size_t pcm_rb_max_item = s_stream.pcm_rb != NULL ? xRingbufferGetMaxItemSize(s_stream.pcm_rb) : 0;
+    const size_t downlink_rb_free = s_stream.downlink_rb != NULL ? xRingbufferGetCurFreeSize(s_stream.downlink_rb) : 0;
+    const size_t downlink_rb_max_item = s_stream.downlink_rb != NULL ? xRingbufferGetMaxItemSize(s_stream.downlink_rb) : 0;
     ESP_LOGI(TAG,
-             "%s runtime: running=%d uplink=%d pending_downlink=%u tx_frames=%u capture_frames=%u rx_frames=%u decoded_frames=%u playback_failures=%u uplink_drops=%u downlink_drops=%u internal_free=%u internal_largest=%u spiram_free=%u spiram_largest=%u encoder_stack_free_bytes=%u decoder_stack_free_bytes=%u capture_stack_free_bytes=%u",
+             "%s runtime: running=%d uplink=%d pending_downlink=%u tx_frames=%u capture_frames=%u rx_frames=%u decoded_frames=%u playback_failures=%u uplink_drops=%u downlink_drops=%u pcm_rb_free=%u pcm_rb_max_item=%u downlink_rb_free=%u downlink_rb_max_item=%u internal_free=%u internal_largest=%u spiram_free=%u spiram_largest=%u minimum_free_heap=%u encoder_stack_free_bytes=%u decoder_stack_free_bytes=%u capture_stack_free_bytes=%u",
              name,
              s_stream.running,
              s_stream.uplink_enabled,
@@ -391,10 +395,15 @@ void audio_opus_stream_log_watermarks(const char *label)
              (unsigned int)s_stream.playback_failures,
              (unsigned int)s_stream.uplink_drop_count,
              (unsigned int)s_stream.downlink_drop_count,
+             (unsigned int)pcm_rb_free,
+             (unsigned int)pcm_rb_max_item,
+             (unsigned int)downlink_rb_free,
+             (unsigned int)downlink_rb_max_item,
              (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
              (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
              (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+             (unsigned int)esp_get_minimum_free_heap_size(),
              (unsigned int)s_stream.encoder_stack_watermark_bytes,
              (unsigned int)s_stream.decoder_stack_watermark_bytes,
              (unsigned int)s_stream.capture_stack_watermark_bytes);
@@ -712,8 +721,15 @@ esp_err_t audio_opus_stream_enqueue_downlink_opus(const uint8_t *opus, size_t le
 
 void audio_opus_stream_flush(void)
 {
+    uint32_t downlink_pending_before = s_stream.downlink_pending_frames;
     drain_ringbuffer(s_stream.pcm_rb);
     drain_ringbuffer(s_stream.downlink_rb);
+    if (downlink_pending_before > 0) {
+        ESP_LOGI(TAG,
+                 "audio stream flush reset pending_downlink old=%u",
+                 (unsigned int)downlink_pending_before);
+    }
+    s_stream.downlink_pending_frames = 0;
 }
 
 static void direct_capture_task(void *arg)
