@@ -184,6 +184,7 @@ def check_p2_resilience_guardrails(failures: list[str]) -> None:
     stop_body = function_body(ws_source, "xiaozhi_ws_stop_listen")
     watermarks_body = function_body(stream_source, "audio_opus_stream_log_watermarks")
     flush_body = function_body(stream_source, "audio_opus_stream_flush")
+    decoder_body = function_body(stream_source, "decoder_task")
 
     require("XIAOZHI_WS_SPEAKING_IDLE_TIMEOUT_MS" in ws_source,
             "P2 speaking playback must define an idle watchdog timeout", failures)
@@ -204,6 +205,8 @@ def check_p2_resilience_guardrails(failures: list[str]) -> None:
             "P2 audio stream must only force-reset downlink pending counters after stopping the stream", failures)
     require("s_stream.downlink_pending_frames = 0" not in flush_body,
             "P2 audio stream flush must not clear pending downlink counters while decoder may still be active", failures)
+    require(decoder_body.count("pending_downlink_decrement()") >= 3,
+            "P2 decoder must decrement pending downlink counters on lock timeout, decode failure, and playback handoff", failures)
 
     for field in (
         "pcm_rb_free",
