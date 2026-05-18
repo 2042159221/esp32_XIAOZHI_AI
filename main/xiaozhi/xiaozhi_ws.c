@@ -1463,8 +1463,9 @@ static esp_err_t start_manual_listen_now(void)
     }
 
     s_next_opus_send_tick = 0;
-    s_manual_listen_start_tick = xTaskGetTickCount();
+    mark_listen_started(XIAOZHI_WS_LISTEN_MODE_MANUAL);
     cancel_waiting_response_timer();
+    cancel_auto_endpoint_timers();
     set_state(XIAOZHI_WS_STATE_LISTENING);
 
     err = audio_opus_stream_set_uplink_enabled(true);
@@ -1586,6 +1587,12 @@ esp_err_t xiaozhi_ws_on_wake_detected(void)
 esp_err_t xiaozhi_ws_on_vad_state(bool speech)
 {
     if (s_ws_state == XIAOZHI_WS_STATE_SPEAKING || s_waiting_tts_stop) {
+        ESP_LOGI(TAG,
+                 "VAD speech ignored while playback muted state=%s waiting_tts_stop=%d muted=%d task=%s",
+                 state_name(s_ws_state),
+                 s_waiting_tts_stop,
+                 s_vad_muted_by_playback,
+                 pcTaskGetName(NULL));
         return ESP_OK;
     }
 
@@ -1619,13 +1626,27 @@ esp_err_t xiaozhi_ws_on_vad_state(bool speech)
         if (err != ESP_OK) {
             return err;
         }
+        mark_listen_started(XIAOZHI_WS_LISTEN_MODE_AUTO);
+        cancel_waiting_response_timer();
+        if (ensure_auto_endpoint_timers()) {
+            (void)xTimerChangePeriod(s_auto_max_listen_timer, pdMS_TO_TICKS(XIAOZHI_WS_AUTO_MAX_LISTEN_MS), 0);
+        }
         (void)audio_opus_stream_set_uplink_enabled(true);
         set_state(XIAOZHI_WS_STATE_LISTENING);
         ESP_LOGI(TAG, "vad speech -> listen start");
     } else if (s_ws_state == XIAOZHI_WS_STATE_LISTENING) {
-        ESP_LOGI(TAG, "vad silence -> listen stop");
-        (void)audio_opus_stream_set_uplink_enabled(false);
-        (void)xiaozhi_ws_stop_listen();
+        if (s_active_listen_mode == XIAOZHI_WS_LISTEN_MODE_AUTO) {
+            if (s_vad_silence_start_time_us == 0) {
+                s_vad_silence_start_time_us = esp_timer_get_time();
+            }
+            ESP_LOGI(TAG,
+                     "vad silence -> endpoint pending mode=auto listen_ms=%u silence_ms=%u",
+                     (unsigned int)current_listen_ms(),
+                     (unsigned int)current_silence_ms());
+            schedule_auto_silence_stop();
+        } else {
+            ESP_LOGI(TAG, "vad silence ignored mode=%s", listen_mode_name(s_active_listen_mode));
+        }
     }
     return ESP_OK;
 }
@@ -1696,22 +1717,36 @@ esp_err_t xiaozhi_ws_stop_listen(void)
     }
 
     s_pending_ptt = false;
+    cancel_auto_endpoint_timers();
     audio_opus_stream_stats_t stats = {0};
     audio_opus_stream_get_stats(&stats);
-    uint32_t listen_ms = 0;
-    if (s_manual_listen_start_tick != 0) {
-        listen_ms = (uint32_t)(pdTICKS_TO_MS(xTaskGetTickCount() - s_manual_listen_start_tick));
-    }
+    uint32_t listen_ms = current_listen_ms();
+    uint32_t silence_ms = current_silence_ms();
+    const xiaozhi_ws_listen_mode_t stop_mode = s_active_listen_mode;
     s_manual_listen_start_tick = 0;
+    s_listen_start_time_us = 0;
+    s_vad_silence_start_time_us = 0;
     uint32_t response_timeout_ms = XIAOZHI_WS_RESPONSE_TIMEOUT_MS;
     if (stats.tx_frames < XIAOZHI_WS_MIN_LISTEN_TX_FRAMES || listen_ms < XIAOZHI_WS_MIN_LISTEN_MS) {
         response_timeout_ms = XIAOZHI_WS_SHORT_RESPONSE_TIMEOUT_MS;
         ESP_LOGW(TAG,
-                 "manual listen too short tx_frames=%u listen_ms=%u, response timeout=%u ms",
-                 (unsigned int)stats.tx_frames,
+                 "listen too short mode=%s listen_ms=%u silence_ms=%u tx_frames=%u tx_bytes=%u response_timeout=%u ms",
+                 listen_mode_name(stop_mode),
                  (unsigned int)listen_ms,
+                 (unsigned int)silence_ms,
+                 (unsigned int)stats.tx_frames,
+                 (unsigned int)stats.tx_bytes,
                  (unsigned int)response_timeout_ms);
     }
+
+    ESP_LOGI(TAG,
+             "listen stop stats mode=%s listen_ms=%u tx_frames=%u tx_bytes=%u silence_ms=%u response_timeout=%u ms",
+             listen_mode_name(stop_mode),
+             (unsigned int)listen_ms,
+             (unsigned int)stats.tx_frames,
+             (unsigned int)stats.tx_bytes,
+             (unsigned int)silence_ms,
+             (unsigned int)response_timeout_ms);
 
     (void)audio_opus_stream_set_uplink_enabled(false);
     audio_opus_stream_flush();
@@ -1727,8 +1762,8 @@ esp_err_t xiaozhi_ws_stop_listen(void)
 #endif
     if (err == ESP_OK && restore_err == ESP_OK) {
         set_waiting_response(XIAOZHI_WS_STATE_LISTENING, response_timeout_ms, &stats);
-        log_heap_stats("listen stop manual");
-        audio_opus_stream_log_watermarks("listen stop manual");
+        log_heap_stats("listen stop");
+        audio_opus_stream_log_watermarks("listen stop");
         return ESP_OK;
     }
 
