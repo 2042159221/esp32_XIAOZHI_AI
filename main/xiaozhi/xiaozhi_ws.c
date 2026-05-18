@@ -13,9 +13,11 @@
 #include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_system.h"
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "freertos/timers.h"
 #include "sdkconfig.h"
@@ -38,10 +40,29 @@ static bool s_button_down;
 static uint32_t s_binary_opus_diagnostics_frames;
 static TimerHandle_t s_waiting_response_timer;
 static TimerHandle_t s_speaking_timeout_timer;
+static TimerHandle_t s_auto_silence_timer;
+static TimerHandle_t s_auto_max_listen_timer;
+static TimerHandle_t s_tts_resume_timer;
+static QueueHandle_t s_session_event_queue;
+static TaskHandle_t s_session_task_handle;
 static xiaozhi_ws_state_t s_waiting_response_last_state = XIAOZHI_WS_STATE_DISCONNECTED;
 static audio_opus_stream_stats_t s_waiting_response_stats;
 static TickType_t s_manual_listen_start_tick;
+static int64_t s_listen_start_time_us;
+static int64_t s_vad_silence_start_time_us;
+static xiaozhi_ws_listen_mode_t s_active_listen_mode = XIAOZHI_WS_LISTEN_MODE_AUTO;
 static uint32_t s_waiting_response_timeout_ms;
+static bool s_vad_muted_by_playback;
+
+#define XIAOZHI_WS_LISTEN_MODE_MANUAL XIAOZHI_WS_LISTEN_MODE_BUTTON
+
+typedef enum {
+    XIAOZHI_WS_EVT_WAIT_RESPONSE_TIMEOUT = 1,
+    XIAOZHI_WS_EVT_SPEAKING_TIMEOUT,
+    XIAOZHI_WS_EVT_AUTO_SILENCE_TIMEOUT,
+    XIAOZHI_WS_EVT_AUTO_MAX_LISTEN_TIMEOUT,
+    XIAOZHI_WS_EVT_TTS_RESUME_DELAY,
+} xiaozhi_ws_session_event_t;
 
 static void websocket_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
 static esp_err_t wait_for_ready(uint32_t timeout_ms);
@@ -58,6 +79,14 @@ static esp_err_t restore_downlink_audio_stream(audio_opus_pcm_source_t pcm_sourc
 static esp_err_t start_sr_uplink_stream(void);
 static esp_err_t ensure_downlink_audio_stream(void);
 static esp_err_t restart_sr_after_downlink(void);
+static bool ensure_session_task(void);
+static bool xiaozhi_ws_post_session_event(xiaozhi_ws_session_event_t event);
+static void xiaozhi_ws_session_task(void *arg);
+static void handle_waiting_response_timeout_event(void);
+static void handle_speaking_timeout_event(void);
+static void handle_auto_silence_timeout_event(void);
+static void handle_auto_max_listen_timeout_event(void);
+static void handle_tts_resume_delay_event(void);
 static void reset_session_flags(void);
 static void waiting_response_timeout_cb(TimerHandle_t timer);
 static void set_waiting_response(xiaozhi_ws_state_t last_state, uint32_t timeout_ms, const audio_opus_stream_stats_t *stats);
@@ -66,8 +95,20 @@ static void note_waiting_response_activity(const char *label);
 static void speaking_timeout_cb(TimerHandle_t timer);
 static bool ensure_speaking_timeout_timer(void);
 static void cancel_speaking_timeout_timer(void);
+static bool ensure_auto_endpoint_timers(void);
+static void cancel_auto_endpoint_timers(void);
+static void auto_silence_timeout_cb(TimerHandle_t timer);
+static void auto_max_listen_timeout_cb(TimerHandle_t timer);
+static bool ensure_tts_resume_timer(void);
+static void cancel_tts_resume_timer(void);
+static void tts_resume_timeout_cb(TimerHandle_t timer);
 static void note_speaking_activity(const char *label);
-static void speaking_recovery_task(void *arg);
+static const char *listen_mode_name(xiaozhi_ws_listen_mode_t mode);
+static void mark_listen_started(xiaozhi_ws_listen_mode_t mode);
+static uint32_t current_listen_ms(void);
+static uint32_t current_silence_ms(void);
+static bool auto_listen_endpoint_ready(uint32_t listen_ms, uint32_t silence_ms, uint32_t tx_frames);
+static void schedule_auto_silence_stop(void);
 
 #if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
 static bool s_auto_sr_downlink_active;
@@ -78,8 +119,14 @@ static bool s_auto_sr_downlink_active;
 #define XIAOZHI_WS_RESPONSE_TIMEOUT_MS 6500
 #define XIAOZHI_WS_SHORT_RESPONSE_TIMEOUT_MS 1500
 #define XIAOZHI_WS_SPEAKING_IDLE_TIMEOUT_MS 30000
-#define XIAOZHI_WS_MIN_LISTEN_TX_FRAMES 8
-#define XIAOZHI_WS_MIN_LISTEN_MS 800
+#define XIAOZHI_WS_MIN_LISTEN_TX_FRAMES 18
+#define XIAOZHI_WS_MIN_LISTEN_MS 1000
+#define XIAOZHI_WS_AUTO_SILENCE_STOP_MS 1000
+#define XIAOZHI_WS_AUTO_MAX_LISTEN_MS 12000
+#define XIAOZHI_WS_TTS_RESUME_DELAY_MS 400
+#define XIAOZHI_WS_SESSION_QUEUE_LENGTH 8
+#define XIAOZHI_WS_SESSION_TASK_STACK_BYTES 4096
+#define XIAOZHI_WS_SESSION_TASK_PRIORITY 5
 #define XIAOZHI_WS_OPUS_SEND_INTERVAL_MS XIAOZHI_PROTOCOL_AUDIO_FRAME_DURATION_MS
 #define XIAOZHI_WS_OPUS_SEND_TIMEOUT_MS 1000
 #define XIAOZHI_WS_DOWNLINK_DRAIN_TIMEOUT_MS 1200
