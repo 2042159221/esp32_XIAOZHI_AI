@@ -200,8 +200,6 @@ def check_p2_resilience_guardrails(failures: list[str]) -> None:
 
     require("s_manual_listen_start_tick = 0" in stop_body,
             "P2 listen stop must clear manual listen start tick after computing the turn duration", failures)
-    require("s_stream.downlink_pending_frames = 0" in flush_body,
-            "P2 audio stream flush must reset stale downlink pending frame counters", failures)
     require("pending_downlink_reset_when_stopped" in stream_source,
             "P2 audio stream must only force-reset downlink pending counters after stopping the stream", failures)
     require("s_stream.downlink_pending_frames = 0" not in flush_body,
