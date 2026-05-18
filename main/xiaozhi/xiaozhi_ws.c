@@ -1048,7 +1048,10 @@ static void handle_tts(const xiaozhi_protocol_msg_t *msg)
     if (strcmp(msg->state, "start") == 0) {
         ESP_LOGI(TAG, "tts start");
         cancel_waiting_response_timer();
+        cancel_auto_endpoint_timers();
+        cancel_tts_resume_timer();
         s_waiting_tts_stop = true;
+        s_vad_muted_by_playback = true;
         esp_err_t err = ensure_downlink_audio_stream();
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "prepare downlink on tts start failed: %s", esp_err_to_name(err));
@@ -1068,10 +1071,13 @@ static void handle_tts(const xiaozhi_protocol_msg_t *msg)
         cancel_waiting_response_timer();
         cancel_speaking_timeout_timer();
         (void)audio_opus_stream_set_uplink_enabled(false);
-        esp_err_t err = restart_sr_after_downlink();
-        s_waiting_tts_stop = false;
-        set_state(err == ESP_OK ? XIAOZHI_WS_STATE_READY : XIAOZHI_WS_STATE_DISCONNECTED);
-        ESP_LOGI(TAG, "tts stop -> READY");
+        if (ensure_tts_resume_timer()) {
+            (void)xTimerChangePeriod(s_tts_resume_timer, pdMS_TO_TICKS(XIAOZHI_WS_TTS_RESUME_DELAY_MS), 0);
+            ESP_LOGI(TAG, "tts stop scheduled SR resume delay=%u ms", (unsigned int)XIAOZHI_WS_TTS_RESUME_DELAY_MS);
+        } else {
+            (void)xiaozhi_ws_post_session_event(XIAOZHI_WS_EVT_TTS_RESUME_DELAY);
+        }
+        ESP_LOGI(TAG, "tts stop -> resume pending");
         log_heap_stats("TTS stop");
         audio_opus_stream_log_watermarks("TTS stop");
         return;
