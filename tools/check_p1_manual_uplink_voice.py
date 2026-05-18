@@ -308,10 +308,10 @@ def check_sr_auto_init_disabled(failures: list[str]) -> None:
     sdkconfig = read("sdkconfig")
     stage1 = read("main/app/xiaozhi_stage1.c")
 
-    require("# CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE is not set" in defaults,
-            "sdkconfig.defaults must keep SR auto init disabled for P1", failures)
-    require("# CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE is not set" in sdkconfig,
-            "sdkconfig must keep SR auto init disabled for P1", failures)
+    require("CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE=y" in defaults,
+            "sdkconfig.defaults must enable SR auto init for P3", failures)
+    require("CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE=y" in sdkconfig,
+            "sdkconfig must enable SR auto init for P3", failures)
     require("#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE" in stage1,
             "stage1 SR startup must remain gated by CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE", failures)
 

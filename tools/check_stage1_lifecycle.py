@@ -13,6 +13,16 @@ def require(condition, message):
         raise AssertionError(message)
 
 
+def kconfig_block(source, name):
+    start = source.find(f"config {name}")
+    if start < 0:
+        return ""
+    next_config = source.find("\n    config ", start + 1)
+    if next_config < 0:
+        return source[start:]
+    return source[start:next_config]
+
+
 def function_body(source, name):
     marker = f"static void {name}"
     start = -1
@@ -132,8 +142,8 @@ def main():
 
     require("config XIAOZHI_STAGE1_AUTO_SR_ENABLE" in kconfig,
             "missing stage1 SR auto-init Kconfig switch")
-    require("default n" in kconfig[kconfig.find("config XIAOZHI_STAGE1_AUTO_SR_ENABLE"):],
-            "stage1 SR auto-init must default to disabled")
+    require("default y" in kconfig_block(kconfig, "XIAOZHI_STAGE1_AUTO_SR_ENABLE"),
+            "stage1 SR auto-init must default to enabled for P3")
     require("config XIAOZHI_STAGE1_WAKE_ONLY_SR_ENABLE" in kconfig,
             "missing stage1 wake-only SR Kconfig switch")
     require("default n" in kconfig[kconfig.find("config XIAOZHI_STAGE1_WAKE_ONLY_SR_ENABLE"):],
@@ -157,8 +167,8 @@ def main():
             "stage1 wake-only callback must not drive VAD listen state")
     require("xiaozhi_ws_feed_processed_pcm" not in wake_only_body,
             "stage1 wake-only callback must not feed uplink PCM")
-    require("CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE" in sdkconfig_defaults,
-            "sdkconfig.defaults must explicitly keep SR auto-init disabled")
+    require("CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE=y" in sdkconfig_defaults,
+            "sdkconfig.defaults must enable SR auto-init for P3")
     require("CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y" in sdkconfig_defaults,
             "sdkconfig.defaults must keep NimBLE dynamic allocations in external PSRAM")
     require("CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y" in sdkconfig,

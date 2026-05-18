@@ -118,12 +118,13 @@ menu "Xiaozhi Agent Stage1 Configuration"
             Delay between OTA DNS resolution or HTTP connect retries.
 
     config XIAOZHI_STAGE1_AUTO_SR_ENABLE
-        bool "Auto initialize SR after WebSocket READY"
-        default n
+        bool "Start WakeNet/VAD SR automatic dialogue"
+        default y
         help
-            Automatically start WakeNet/VAD/AFE after the Xiaozhi WebSocket
-            handshake reaches READY. Keep this disabled while isolating
-            SR/AFE initialization crashes.
+            Start WakeNet/VAD SR for the P3 automatic dialogue path. WakeNet
+            owns the 16 kHz microphone path, VAD starts the Opus uplink from
+            processed SR PCM, and downlink playback explicitly pauses SR before
+            taking codec ownership.
 
     config XIAOZHI_STAGE1_WAKE_ONLY_SR_ENABLE
         bool "Start WakeNet-only SR after WebSocket READY"
