@@ -342,22 +342,8 @@ static void note_waiting_response_activity(const char *label)
 static void waiting_response_timeout_cb(TimerHandle_t timer)
 {
     (void)timer;
-    if (s_ws_state != XIAOZHI_WS_STATE_WAITING_RESPONSE) {
-        return;
-    }
-
-    ESP_LOGW(TAG,
-             "WAITING_RESPONSE timeout after %u ms tx_frames=%u tx_bytes=%u last_state=%s heap internal_free=%u internal_largest=%u spiram_free=%u spiram_largest=%u",
-             (unsigned int)s_waiting_response_timeout_ms,
-             (unsigned int)s_waiting_response_stats.tx_frames,
-             (unsigned int)s_waiting_response_stats.tx_bytes,
-             state_name(s_waiting_response_last_state),
-             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
-             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    s_waiting_tts_stop = false;
-    set_state(XIAOZHI_WS_STATE_READY);
+    ESP_LOGW(TAG, "WAITING_RESPONSE timer callback post event task=%s", pcTaskGetName(NULL));
+    (void)xiaozhi_ws_post_session_event(XIAOZHI_WS_EVT_WAIT_RESPONSE_TIMEOUT);
 }
 
 static bool ensure_speaking_timeout_timer(void)
@@ -398,21 +384,8 @@ static void note_speaking_activity(const char *label)
 static void speaking_timeout_cb(TimerHandle_t timer)
 {
     (void)timer;
-    if (s_ws_state != XIAOZHI_WS_STATE_SPEAKING) {
-        return;
-    }
-
-    ESP_LOGW(TAG,
-             "SPEAKING idle timeout after %u ms, recover to READY",
-             (unsigned int)XIAOZHI_WS_SPEAKING_IDLE_TIMEOUT_MS);
-    s_waiting_tts_stop = false;
-#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
-    if (xTaskCreate(speaking_recovery_task, "xz_tts_rec", 4096, NULL, tskIDLE_PRIORITY + 1, NULL) == pdPASS) {
-        return;
-    }
-    ESP_LOGW(TAG, "create speaking recovery task failed, READY without SR resume");
-#endif
-    set_state(XIAOZHI_WS_STATE_READY);
+    ESP_LOGW(TAG, "SPEAKING timer callback post event task=%s", pcTaskGetName(NULL));
+    (void)xiaozhi_ws_post_session_event(XIAOZHI_WS_EVT_SPEAKING_TIMEOUT);
 }
 
 static bool ensure_session_task(void)
@@ -487,15 +460,106 @@ static void xiaozhi_ws_session_task(void *arg)
     }
 }
 
-static void speaking_recovery_task(void *arg)
+static void handle_waiting_response_timeout_event(void)
 {
-    (void)arg;
+    ESP_LOGW(TAG,
+             "WAITING_RESPONSE timeout event task=%s state=%s timeout=%u tx_frames=%u tx_bytes=%u last_state=%s internal_free=%u internal_largest=%u",
+             pcTaskGetName(NULL),
+             state_name(s_ws_state),
+             (unsigned int)s_waiting_response_timeout_ms,
+             (unsigned int)s_waiting_response_stats.tx_frames,
+             (unsigned int)s_waiting_response_stats.tx_bytes,
+             state_name(s_waiting_response_last_state),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+
+    if (s_ws_state != XIAOZHI_WS_STATE_WAITING_RESPONSE) {
+        ESP_LOGI(TAG, "WAITING_RESPONSE timeout event ignored state=%s task=%s", state_name(s_ws_state), pcTaskGetName(NULL));
+        return;
+    }
+
+    s_waiting_tts_stop = false;
+    set_state(XIAOZHI_WS_STATE_READY);
+    ESP_LOGI(TAG,
+             "WAITING_RESPONSE timeout event handled state=%s internal_free=%u internal_largest=%u task=%s",
+             state_name(s_ws_state),
+             (unsigned int)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             pcTaskGetName(NULL));
+}
+
+static void handle_speaking_timeout_event(void)
+{
+    ESP_LOGW(TAG,
+             "SPEAKING timeout event task=%s state=%s timeout=%u",
+             pcTaskGetName(NULL),
+             state_name(s_ws_state),
+             (unsigned int)XIAOZHI_WS_SPEAKING_IDLE_TIMEOUT_MS);
+    if (s_ws_state != XIAOZHI_WS_STATE_SPEAKING) {
+        return;
+    }
+
+    s_waiting_tts_stop = false;
     esp_err_t err = restart_sr_after_downlink();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "speaking recovery failed: %s", esp_err_to_name(err));
     }
     set_state(err == ESP_OK ? XIAOZHI_WS_STATE_READY : XIAOZHI_WS_STATE_DISCONNECTED);
-    vTaskDelete(NULL);
+}
+
+static void handle_auto_silence_timeout_event(void)
+{
+    if (s_ws_state != XIAOZHI_WS_STATE_LISTENING || s_active_listen_mode != XIAOZHI_WS_LISTEN_MODE_AUTO) {
+        ESP_LOGI(TAG, "auto silence event ignored state=%s mode=%s task=%s", state_name(s_ws_state), listen_mode_name(s_active_listen_mode), pcTaskGetName(NULL));
+        return;
+    }
+
+    audio_opus_stream_stats_t stats = {0};
+    audio_opus_stream_get_stats(&stats);
+    uint32_t listen_ms = current_listen_ms();
+    uint32_t silence_ms = current_silence_ms();
+    ESP_LOGI(TAG,
+             "auto silence event mode=auto listen_ms=%u silence_ms=%u tx_frames=%u tx_bytes=%u task=%s",
+             (unsigned int)listen_ms,
+             (unsigned int)silence_ms,
+             (unsigned int)stats.tx_frames,
+             (unsigned int)stats.tx_bytes,
+             pcTaskGetName(NULL));
+
+    if (!auto_listen_endpoint_ready(listen_ms, silence_ms, stats.tx_frames)) {
+        schedule_auto_silence_stop();
+        return;
+    }
+
+    (void)xiaozhi_ws_stop_listen();
+}
+
+static void handle_auto_max_listen_timeout_event(void)
+{
+    if (s_ws_state != XIAOZHI_WS_STATE_LISTENING || s_active_listen_mode != XIAOZHI_WS_LISTEN_MODE_AUTO) {
+        ESP_LOGI(TAG, "auto max listen event ignored state=%s mode=%s task=%s", state_name(s_ws_state), listen_mode_name(s_active_listen_mode), pcTaskGetName(NULL));
+        return;
+    }
+
+    audio_opus_stream_stats_t stats = {0};
+    audio_opus_stream_get_stats(&stats);
+    ESP_LOGW(TAG,
+             "auto max listen event mode=auto listen_ms=%u silence_ms=%u tx_frames=%u tx_bytes=%u task=%s",
+             (unsigned int)current_listen_ms(),
+             (unsigned int)current_silence_ms(),
+             (unsigned int)stats.tx_frames,
+             (unsigned int)stats.tx_bytes,
+             pcTaskGetName(NULL));
+    (void)xiaozhi_ws_stop_listen();
+}
+
+static void handle_tts_resume_delay_event(void)
+{
+    ESP_LOGI(TAG, "TTS resume delay event state=%s task=%s", state_name(s_ws_state), pcTaskGetName(NULL));
+    s_vad_muted_by_playback = false;
+    esp_err_t err = restart_sr_after_downlink();
+    s_waiting_tts_stop = false;
+    set_state(err == ESP_OK ? XIAOZHI_WS_STATE_READY : XIAOZHI_WS_STATE_DISCONNECTED);
 }
 
 static void log_token_summary(const char *token)
