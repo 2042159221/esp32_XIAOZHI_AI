@@ -202,6 +202,10 @@ def check_p2_resilience_guardrails(failures: list[str]) -> None:
             "P2 listen stop must clear manual listen start tick after computing the turn duration", failures)
     require("s_stream.downlink_pending_frames = 0" in flush_body,
             "P2 audio stream flush must reset stale downlink pending frame counters", failures)
+    require("pending_downlink_reset_when_stopped" in stream_source,
+            "P2 audio stream must only force-reset downlink pending counters after stopping the stream", failures)
+    require("s_stream.downlink_pending_frames = 0" not in flush_body,
+            "P2 audio stream flush must not clear pending downlink counters while decoder may still be active", failures)
 
     for field in (
         "pcm_rb_free",
@@ -234,6 +238,10 @@ def check_p2_log_resilience_tool(failures: list[str]) -> None:
     ):
         require(symbol in tool_source,
                 f"P2 runtime log validator must check {symbol}", failures)
+    require("self.waiting_to_speaking and self.speaking_to_ready" in tool_source,
+            "P2 runtime log validator must require SPEAKING -> READY before counting a speaking turn complete", failures)
+    require("or self.speaking_idle_timeout" not in tool_source,
+            "P2 runtime log validator must not treat SPEAKING idle timeout alone as a complete turn", failures)
 
 
 def check_pcm_diagnostics_and_sample_contract(failures: list[str]) -> None:
