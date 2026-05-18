@@ -22,6 +22,7 @@
 #include "xiaozhi_device.h"
 #include "xiaozhi_handle.h"
 #include "xiaozhi_protocol.h"
+#include "xiaozhi_sr.h"
 
 static const char *TAG = "xiaozhi_ws";
 
@@ -51,8 +52,12 @@ static esp_err_t ensure_websocket_ready(void);
 static esp_err_t start_manual_listen_now(void);
 static void start_pending_ptt_if_ready(void);
 static esp_err_t send_listen_state(const char *state, const char *mode);
+static esp_err_t start_audio_stream_with_flags(audio_opus_pcm_source_t pcm_source, int decoder_output_sample_rate, uint32_t flags);
 static esp_err_t start_audio_stream_with_rate(audio_opus_pcm_source_t pcm_source, int decoder_output_sample_rate);
 static esp_err_t restore_downlink_audio_stream(audio_opus_pcm_source_t pcm_source);
+static esp_err_t start_sr_uplink_stream(void);
+static esp_err_t ensure_downlink_audio_stream(void);
+static esp_err_t restart_sr_after_downlink(void);
 static void reset_session_flags(void);
 static void waiting_response_timeout_cb(TimerHandle_t timer);
 static void set_waiting_response(xiaozhi_ws_state_t last_state, uint32_t timeout_ms, const audio_opus_stream_stats_t *stats);
@@ -62,6 +67,11 @@ static void speaking_timeout_cb(TimerHandle_t timer);
 static bool ensure_speaking_timeout_timer(void);
 static void cancel_speaking_timeout_timer(void);
 static void note_speaking_activity(const char *label);
+static void speaking_recovery_task(void *arg);
+
+#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+static bool s_auto_sr_downlink_active;
+#endif
 
 #define XIAOZHI_WS_READY_TIMEOUT_MS 10000
 #define XIAOZHI_WS_READY_POLL_MS 100
@@ -287,7 +297,24 @@ static void speaking_timeout_cb(TimerHandle_t timer)
              "SPEAKING idle timeout after %u ms, recover to READY",
              (unsigned int)XIAOZHI_WS_SPEAKING_IDLE_TIMEOUT_MS);
     s_waiting_tts_stop = false;
+#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+    if (xTaskCreate(speaking_recovery_task, "xz_tts_rec", 4096, NULL, tskIDLE_PRIORITY + 1, NULL) == pdPASS) {
+        return;
+    }
+    ESP_LOGW(TAG, "create speaking recovery task failed, READY without SR resume");
+#endif
     set_state(XIAOZHI_WS_STATE_READY);
+}
+
+static void speaking_recovery_task(void *arg)
+{
+    (void)arg;
+    esp_err_t err = restart_sr_after_downlink();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "speaking recovery failed: %s", esp_err_to_name(err));
+    }
+    set_state(err == ESP_OK ? XIAOZHI_WS_STATE_READY : XIAOZHI_WS_STATE_DISCONNECTED);
+    vTaskDelete(NULL);
 }
 
 static void log_token_summary(const char *token)
@@ -432,18 +459,10 @@ static int resolve_decoder_output_sample_rate(void)
 
 static esp_err_t start_audio_stream(audio_opus_pcm_source_t pcm_source)
 {
-    const audio_opus_stream_config_t config = {
-        .send_cb = send_opus_frame,
-        .user_ctx = NULL,
-        .output_volume = -1,
-        .pcm_source = pcm_source,
-        .decoder_output_sample_rate = resolve_decoder_output_sample_rate(),
-    };
-    esp_err_t err = audio_opus_stream_start(&config);
-    return err;
+    return start_audio_stream_with_flags(pcm_source, resolve_decoder_output_sample_rate(), 0);
 }
 
-static esp_err_t start_audio_stream_with_rate(audio_opus_pcm_source_t pcm_source, int decoder_output_sample_rate)
+static esp_err_t start_audio_stream_with_flags(audio_opus_pcm_source_t pcm_source, int decoder_output_sample_rate, uint32_t flags)
 {
     const audio_opus_stream_config_t config = {
         .send_cb = send_opus_frame,
@@ -451,8 +470,78 @@ static esp_err_t start_audio_stream_with_rate(audio_opus_pcm_source_t pcm_source
         .output_volume = -1,
         .pcm_source = pcm_source,
         .decoder_output_sample_rate = decoder_output_sample_rate,
+        .flags = flags,
     };
     return audio_opus_stream_start(&config);
+}
+
+static esp_err_t start_audio_stream_with_rate(audio_opus_pcm_source_t pcm_source, int decoder_output_sample_rate)
+{
+    return start_audio_stream_with_flags(pcm_source, decoder_output_sample_rate, 0);
+}
+
+static esp_err_t start_sr_uplink_stream(void)
+{
+    (void)audio_opus_stream_set_uplink_enabled(false);
+    audio_opus_stream_flush();
+    stop_opus_audio_stream();
+
+#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+    s_auto_sr_downlink_active = false;
+#endif
+
+    ESP_LOGI(TAG, "start SR external PCM uplink stream");
+    return start_audio_stream_with_flags(AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED,
+                                         AUDIO_OPUS_SAMPLE_RATE,
+                                         AUDIO_OPUS_STREAM_FLAG_SKIP_AUDIO_PATH_OPEN |
+                                             AUDIO_OPUS_STREAM_FLAG_UPLINK_ONLY);
+}
+
+static esp_err_t ensure_downlink_audio_stream(void)
+{
+#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+    if (s_auto_sr_downlink_active) {
+        return ESP_OK;
+    }
+
+    ESP_RETURN_ON_ERROR(xiaozhi_sr_pause(), TAG, "pause SR before downlink failed");
+    (void)audio_opus_stream_set_uplink_enabled(false);
+    audio_opus_stream_flush();
+    stop_opus_audio_stream();
+
+    ESP_LOGI(TAG,
+             "prepare downlink audio path current_sample_rate=%d target_sample_rate=%d",
+             bsp_audio_get_current_sample_rate(),
+             resolve_decoder_output_sample_rate());
+    esp_err_t err = start_audio_stream(AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "start downlink opus stream failed: %s", esp_err_to_name(err));
+        (void)xiaozhi_sr_resume();
+        return err;
+    }
+    (void)audio_opus_stream_set_uplink_enabled(false);
+    audio_opus_stream_flush();
+    s_auto_sr_downlink_active = true;
+    return ESP_OK;
+#else
+    return start_audio_stream(AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED);
+#endif
+}
+
+static esp_err_t restart_sr_after_downlink(void)
+{
+#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+    (void)audio_opus_stream_set_uplink_enabled(false);
+    (void)audio_opus_stream_wait_downlink_idle(XIAOZHI_WS_DOWNLINK_DRAIN_TIMEOUT_MS);
+    (void)audio_opus_stream_close_decoder();
+    stop_opus_audio_stream();
+    s_auto_sr_downlink_active = false;
+    ESP_RETURN_ON_ERROR(xiaozhi_sr_resume(), TAG, "resume SR after downlink failed");
+    return ESP_OK;
+#else
+    (void)audio_opus_stream_close_decoder();
+    return ESP_OK;
+#endif
 }
 
 static esp_err_t restore_downlink_audio_stream(audio_opus_pcm_source_t pcm_source)
@@ -488,6 +577,10 @@ static void stop_session_audio_io(void)
     (void)audio_opus_stream_set_uplink_enabled(false);
     audio_opus_stream_flush();
     stop_opus_audio_stream();
+#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+    s_auto_sr_downlink_active = false;
+    (void)xiaozhi_sr_resume();
+#endif
 }
 
 static void stop_opus_audio_stream(void)
@@ -562,6 +655,9 @@ static void handle_server_hello(const xiaozhi_protocol_msg_t *msg)
              s_server_audio.channels,
              s_server_audio.frame_duration_ms);
 
+#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+    ESP_LOGI(TAG, "automatic SR mode keeps codec owned by WakeNet/VAD until downlink playback");
+#else
     esp_err_t err = start_audio_stream(AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "start opus voice stream failed: %s", esp_err_to_name(err));
@@ -570,6 +666,7 @@ static void handle_server_hello(const xiaozhi_protocol_msg_t *msg)
     }
     (void)audio_opus_stream_set_uplink_enabled(false);
     audio_opus_stream_flush();
+#endif
 
     set_state(XIAOZHI_WS_STATE_READY);
     log_heap_stats("WS READY");
@@ -583,6 +680,12 @@ static void handle_tts(const xiaozhi_protocol_msg_t *msg)
         ESP_LOGI(TAG, "tts start");
         cancel_waiting_response_timer();
         s_waiting_tts_stop = true;
+        esp_err_t err = ensure_downlink_audio_stream();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "prepare downlink on tts start failed: %s", esp_err_to_name(err));
+            set_state(XIAOZHI_WS_STATE_DISCONNECTED);
+            return;
+        }
         (void)audio_opus_stream_set_uplink_enabled(false);
         set_state(XIAOZHI_WS_STATE_SPEAKING);
         note_speaking_activity("tts start");
@@ -596,10 +699,9 @@ static void handle_tts(const xiaozhi_protocol_msg_t *msg)
         cancel_waiting_response_timer();
         cancel_speaking_timeout_timer();
         (void)audio_opus_stream_set_uplink_enabled(false);
-        (void)audio_opus_stream_wait_downlink_idle(XIAOZHI_WS_DOWNLINK_DRAIN_TIMEOUT_MS);
-        (void)audio_opus_stream_close_decoder();
+        esp_err_t err = restart_sr_after_downlink();
         s_waiting_tts_stop = false;
-        set_state(XIAOZHI_WS_STATE_READY);
+        set_state(err == ESP_OK ? XIAOZHI_WS_STATE_READY : XIAOZHI_WS_STATE_DISCONNECTED);
         ESP_LOGI(TAG, "tts stop -> READY");
         log_heap_stats("TTS stop");
         audio_opus_stream_log_watermarks("TTS stop");
@@ -662,6 +764,12 @@ static void handle_binary_opus(const uint8_t *data, size_t len)
         s_waiting_tts_stop = true;
         (void)audio_opus_stream_set_uplink_enabled(false);
         set_state(XIAOZHI_WS_STATE_SPEAKING);
+    }
+    esp_err_t prepare_err = ensure_downlink_audio_stream();
+    if (prepare_err != ESP_OK) {
+        ESP_LOGW(TAG, "prepare downlink for binary opus failed: %s", esp_err_to_name(prepare_err));
+        set_state(XIAOZHI_WS_STATE_DISCONNECTED);
+        return;
     }
     note_speaking_activity("binary opus");
 
@@ -932,6 +1040,14 @@ static esp_err_t start_manual_listen_now(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    esp_err_t err = ESP_OK;
+#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+    err = start_sr_uplink_stream();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "start manual SR external PCM stream failed: %s", esp_err_to_name(err));
+        return err;
+    }
+#else
     (void)audio_opus_stream_set_uplink_enabled(false);
     (void)audio_opus_stream_wait_downlink_idle(XIAOZHI_WS_DOWNLINK_DRAIN_TIMEOUT_MS);
     audio_opus_stream_flush();
@@ -941,7 +1057,7 @@ static esp_err_t start_manual_listen_now(void)
              "manual listen switch audio path current_sample_rate=%d target_sample_rate=%d",
              bsp_audio_get_current_sample_rate(),
              AUDIO_OPUS_SAMPLE_RATE);
-    esp_err_t err = bsp_audio_open_with_sample_rate(AUDIO_OPUS_SAMPLE_RATE);
+    err = bsp_audio_open_with_sample_rate(AUDIO_OPUS_SAMPLE_RATE);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "switch audio path for manual capture failed: %s", esp_err_to_name(err));
         return err;
@@ -953,13 +1069,18 @@ static esp_err_t start_manual_listen_now(void)
         (void)restore_downlink_audio_stream(AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED);
         return err;
     }
+#endif
 
     err = send_listen_state("start", "manual");
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "manual listen start send failed: %s", esp_err_to_name(err));
         (void)audio_opus_stream_set_uplink_enabled(false);
         audio_opus_stream_flush();
+#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+        stop_opus_audio_stream();
+#else
         (void)restore_downlink_audio_stream(AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED);
+#endif
         return err;
     }
 
@@ -972,6 +1093,12 @@ static esp_err_t start_manual_listen_now(void)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "manual listen uplink enable failed: %s", esp_err_to_name(err));
         (void)send_listen_state("stop", "manual");
+#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+        stop_opus_audio_stream();
+        (void)xiaozhi_sr_resume();
+        audio_opus_stream_stats_t stats = {0};
+        set_waiting_response(XIAOZHI_WS_STATE_LISTENING, XIAOZHI_WS_SHORT_RESPONSE_TIMEOUT_MS, &stats);
+#else
         esp_err_t restore_err = restore_downlink_audio_stream(AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED);
         if (restore_err == ESP_OK) {
             audio_opus_stream_stats_t stats = {0};
@@ -979,6 +1106,7 @@ static esp_err_t start_manual_listen_now(void)
         } else {
             set_state(XIAOZHI_WS_STATE_DISCONNECTED);
         }
+#endif
         return err;
     }
 
@@ -1100,7 +1228,16 @@ esp_err_t xiaozhi_ws_on_vad_state(bool speech)
             return ESP_ERR_INVALID_STATE;
         }
 
+#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+        err = start_sr_uplink_stream();
+        if (err != ESP_OK) {
+            return err;
+        }
+
+        err = send_listen_state("start", "auto");
+#else
         err = send_listen_state("start", "manual");
+#endif
         if (err != ESP_OK) {
             return err;
         }
@@ -1203,8 +1340,13 @@ esp_err_t xiaozhi_ws_stop_listen(void)
     char *json = NULL;
     ESP_RETURN_ON_ERROR(xiaozhi_protocol_build_listen_stop_json(s_session_id, &json), TAG, "build listen stop failed");
     esp_err_t err = send_text_json(json, "listen stop");
+#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+    stop_opus_audio_stream();
+    esp_err_t restore_err = xiaozhi_sr_resume();
+#else
     const audio_opus_pcm_source_t restore_source = AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED;
     esp_err_t restore_err = restore_downlink_audio_stream(restore_source);
+#endif
     if (err == ESP_OK && restore_err == ESP_OK) {
         set_waiting_response(XIAOZHI_WS_STATE_LISTENING, response_timeout_ms, &stats);
         log_heap_stats("listen stop manual");
