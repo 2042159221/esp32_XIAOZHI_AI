@@ -15,6 +15,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/idf_additions.h"
 #include "freertos/task.h"
 #include "provisioning_qr_payload.h"
 #include "qrcode.h"
@@ -52,7 +53,6 @@ enum {
 static provisioning_service_state_t s_current_state = PROVISIONING_SERVICE_STATE_UNPROVISIONED;
 static provisioning_service_config_t s_service_config;
 static const esp_prov_strategy_t *s_active_strategy;
-static bool s_restart_provisioning_after_stop;
 static bool s_stop_requested_by_app;
 static bool s_start_business_after_stop;
 static bool s_prov_deinited;
@@ -65,7 +65,6 @@ static void provisioning_event_cb(void *user_data, wifi_prov_cb_event_t event, v
 static void log_provisioning_info(const esp_prov_strategy_t *strategy, const char *service_name, const char *service_key);
 static esp_err_t start_provisioning_service(void);
 static esp_err_t switch_to_fallback_strategy(const char *reason);
-static esp_err_t restart_active_provisioning_service(const char *reason);
 static void request_provisioning_stop_now(void);
 static void schedule_provisioning_finalize(void);
 static void provisioning_finalize_task(void *arg);
@@ -85,7 +84,6 @@ esp_err_t provisioning_service_start(const provisioning_service_config_t *config
         s_service_config = *config;
     }
 
-    s_restart_provisioning_after_stop = false;
     s_stop_requested_by_app = false;
     s_start_business_after_stop = false;
     s_prov_deinited = false;
@@ -241,35 +239,6 @@ static esp_err_t switch_to_fallback_strategy(const char *reason)
     return ESP_OK;
 }
 
-static esp_err_t restart_active_provisioning_service(const char *reason)
-{
-    ESP_LOGW(TAG, "restart %s provisioning service: %s", s_active_strategy->name, reason);
-
-    s_stop_requested_by_app = false;
-    s_prov_deinited = false;
-    if (s_lifecycle_event_group != NULL) {
-        xEventGroupClearBits(s_lifecycle_event_group, PROV_STOPPED_BIT);
-    }
-
-    ESP_RETURN_ON_ERROR(esp_prov_adapter_init(s_active_strategy, provisioning_event_cb, NULL),
-                        TAG,
-                        "re-init provisioning adapter failed");
-    ESP_RETURN_ON_ERROR(esp_prov_adapter_disable_auto_stop(CONFIG_APP_PROV_STOP_DELAY_MS),
-                        TAG,
-                        "disable provisioning auto stop before restart failed");
-
-    esp_err_t err = esp_prov_adapter_start(s_active_strategy, CONFIG_APP_PROV_SERVICE_NAME, CONFIG_APP_PROV_SERVICE_KEY);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "restart %s provisioning failed: %s", s_active_strategy->name, esp_err_to_name(err));
-        return switch_to_fallback_strategy("restart preferred provisioning failed");
-    }
-
-    set_state(PROVISIONING_SERVICE_STATE_PROVISIONING);
-    ESP_LOGI(TAG, "provisioning restarted, service_name=%s", CONFIG_APP_PROV_SERVICE_NAME);
-    log_provisioning_info(s_active_strategy, CONFIG_APP_PROV_SERVICE_NAME, CONFIG_APP_PROV_SERVICE_KEY);
-    return ESP_OK;
-}
-
 static void request_provisioning_stop_now(void)
 {
     s_stop_requested_by_app = true;
@@ -293,12 +262,23 @@ static void schedule_provisioning_finalize(void)
         return;
     }
 
+#if CONFIG_SPIRAM
+    BaseType_t created = xTaskCreatePinnedToCoreWithCaps(provisioning_finalize_task,
+                                                         "prov_finalize",
+                                                         PROV_FINALIZE_TASK_STACK,
+                                                         NULL,
+                                                         PROV_FINALIZE_TASK_PRIORITY,
+                                                         NULL,
+                                                         tskNO_AFFINITY,
+                                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
     BaseType_t created = xTaskCreate(provisioning_finalize_task,
                                      "prov_finalize",
                                      PROV_FINALIZE_TASK_STACK,
                                      NULL,
                                      PROV_FINALIZE_TASK_PRIORITY,
                                      NULL);
+#endif
     if (created != pdPASS) {
         taskENTER_CRITICAL(&s_finalize_task_lock);
         s_finalize_task_active = false;
@@ -318,7 +298,11 @@ static void provisioning_finalize_task(void *arg)
     s_finalize_task_active = false;
     taskEXIT_CRITICAL(&s_finalize_task_lock);
 
+#if CONFIG_SPIRAM
+    vTaskDeleteWithCaps(NULL);
+#else
     vTaskDelete(NULL);
+#endif
 }
 
 static void finish_provisioning_stop(void)
@@ -341,16 +325,6 @@ static void finish_provisioning_stop(void)
     if (s_stop_requested_by_app) {
         s_stop_requested_by_app = false;
         ESP_LOGI(TAG, "provisioning stopped after app request");
-    }
-
-    if (s_restart_provisioning_after_stop) {
-        s_restart_provisioning_after_stop = false;
-
-        esp_err_t err = restart_active_provisioning_service("credential failure requested a clean restart");
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "restart provisioning service failed: %s", esp_err_to_name(err));
-        }
-        return;
     }
 
     maybe_start_business_after_provisioning();
@@ -477,9 +451,7 @@ static void provisioning_event_cb(void *user_data, wifi_prov_cb_event_t event, v
         ESP_LOGW(TAG, "WIFI_PROV_CRED_FAIL");
         set_state(PROVISIONING_SERVICE_STATE_FAILED);
         ESP_LOGW(TAG, "wifi provisioning credential failed");
-        s_restart_provisioning_after_stop = true;
-        esp_prov_adapter_stop_provisioning();
-        schedule_provisioning_finalize();
+        ESP_LOGW(TAG, "keep provisioning active for credential retry");
         break;
 
     case WIFI_PROV_CRED_SUCCESS:
