@@ -134,10 +134,16 @@ def main():
             "missing stage1 SR auto-init Kconfig switch")
     require("default n" in kconfig[kconfig.find("config XIAOZHI_STAGE1_AUTO_SR_ENABLE"):],
             "stage1 SR auto-init must default to disabled")
+    require("config XIAOZHI_STAGE1_WAKE_ONLY_SR_ENABLE" in kconfig,
+            "missing stage1 wake-only SR Kconfig switch")
+    require("default n" in kconfig[kconfig.find("config XIAOZHI_STAGE1_WAKE_ONLY_SR_ENABLE"):],
+            "stage1 wake-only SR must default to disabled")
     require("CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE" in stage1,
             "stage1 must gate SR init on config")
     require("SR auto init disabled" in stage1,
             "stage1 must log SR auto-init disabled after READY")
+    require("CONFIG_XIAOZHI_STAGE1_WAKE_ONLY_SR_ENABLE" in stage1,
+            "stage1 must gate wake-only SR init on config")
     require("CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE" in sdkconfig_defaults,
             "sdkconfig.defaults must explicitly keep SR auto-init disabled")
     require("CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y" in sdkconfig_defaults,
