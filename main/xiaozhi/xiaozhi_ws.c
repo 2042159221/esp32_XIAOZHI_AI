@@ -530,7 +530,8 @@ static bool ensure_session_task(void)
 
 static bool xiaozhi_ws_post_session_event(xiaozhi_ws_session_event_t event)
 {
-    if (!ensure_session_task()) {
+    if (s_session_event_queue == NULL) {
+        ESP_LOGW(TAG, "drop session event=%d queue not ready task=%s", (int)event, pcTaskGetName(NULL));
         return false;
     }
 
@@ -1218,6 +1219,11 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
 esp_err_t xiaozhi_ws_start(void)
 {
     log_heap_stats("xiaozhi_ws_start entry");
+
+    if (!ensure_session_task()) {
+        set_state(XIAOZHI_WS_STATE_DISCONNECTED);
+        return ESP_ERR_NO_MEM;
+    }
 
     if (!xiaozhi_handle_is_activated()) {
         ESP_LOGW(TAG, "skip websocket start because device is not activated");
