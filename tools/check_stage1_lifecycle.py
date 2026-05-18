@@ -144,6 +144,19 @@ def main():
             "stage1 must log SR auto-init disabled after READY")
     require("CONFIG_XIAOZHI_STAGE1_WAKE_ONLY_SR_ENABLE" in stage1,
             "stage1 must gate wake-only SR init on config")
+    require("sr_wake_only_cb" in stage1,
+            "stage1 wake-only SR must use a dedicated wake-only callback")
+    require(".vad_state_cb = NULL" in stage1,
+            "stage1 wake-only SR must not attach VAD callback")
+    require(".pcm_output_cb = NULL" in stage1,
+            "stage1 wake-only SR must not attach PCM uplink callback")
+    wake_only_body = function_body(stage1, "sr_wake_only_cb")
+    require("xiaozhi_ws_on_wake_detected" not in wake_only_body,
+            "stage1 wake-only callback must not request WebSocket wake handling")
+    require("xiaozhi_ws_on_vad_state" not in wake_only_body,
+            "stage1 wake-only callback must not drive VAD listen state")
+    require("xiaozhi_ws_feed_processed_pcm" not in wake_only_body,
+            "stage1 wake-only callback must not feed uplink PCM")
     require("CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE" in sdkconfig_defaults,
             "sdkconfig.defaults must explicitly keep SR auto-init disabled")
     require("CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y" in sdkconfig_defaults,
