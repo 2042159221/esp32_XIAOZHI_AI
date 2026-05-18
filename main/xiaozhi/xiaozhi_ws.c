@@ -415,6 +415,78 @@ static void speaking_timeout_cb(TimerHandle_t timer)
     set_state(XIAOZHI_WS_STATE_READY);
 }
 
+static bool ensure_session_task(void)
+{
+    if (s_session_event_queue == NULL) {
+        s_session_event_queue = xQueueCreate(XIAOZHI_WS_SESSION_QUEUE_LENGTH, sizeof(xiaozhi_ws_session_event_t));
+        if (s_session_event_queue == NULL) {
+            ESP_LOGE(TAG, "create xiaozhi session event queue failed");
+            return false;
+        }
+    }
+
+    if (s_session_task_handle == NULL) {
+        BaseType_t created = xTaskCreate(xiaozhi_ws_session_task,
+                                         "xz_ws_sess",
+                                         XIAOZHI_WS_SESSION_TASK_STACK_BYTES,
+                                         NULL,
+                                         XIAOZHI_WS_SESSION_TASK_PRIORITY,
+                                         &s_session_task_handle);
+        if (created != pdPASS) {
+            ESP_LOGE(TAG, "create xiaozhi session task failed");
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool xiaozhi_ws_post_session_event(xiaozhi_ws_session_event_t event)
+{
+    if (!ensure_session_task()) {
+        return false;
+    }
+
+    BaseType_t sent = xQueueSend(s_session_event_queue, &event, 0);
+    if (sent != pdTRUE) {
+        ESP_LOGW(TAG, "drop session event=%d queue full task=%s", (int)event, pcTaskGetName(NULL));
+        return false;
+    }
+    return true;
+}
+
+static void xiaozhi_ws_session_task(void *arg)
+{
+    (void)arg;
+    xiaozhi_ws_session_event_t event = 0;
+    while (true) {
+        if (xQueueReceive(s_session_event_queue, &event, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        switch (event) {
+        case XIAOZHI_WS_EVT_WAIT_RESPONSE_TIMEOUT:
+            handle_waiting_response_timeout_event();
+            break;
+        case XIAOZHI_WS_EVT_SPEAKING_TIMEOUT:
+            handle_speaking_timeout_event();
+            break;
+        case XIAOZHI_WS_EVT_AUTO_SILENCE_TIMEOUT:
+            handle_auto_silence_timeout_event();
+            break;
+        case XIAOZHI_WS_EVT_AUTO_MAX_LISTEN_TIMEOUT:
+            handle_auto_max_listen_timeout_event();
+            break;
+        case XIAOZHI_WS_EVT_TTS_RESUME_DELAY:
+            handle_tts_resume_delay_event();
+            break;
+        default:
+            ESP_LOGW(TAG, "unknown session event=%d task=%s", (int)event, pcTaskGetName(NULL));
+            break;
+        }
+    }
+}
+
 static void speaking_recovery_task(void *arg)
 {
     (void)arg;
