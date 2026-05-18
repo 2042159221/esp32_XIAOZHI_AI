@@ -67,6 +67,7 @@ def main() -> int:
     feed_body = function_body(ws_source, "xiaozhi_ws_feed_processed_pcm")
     manual_start = function_body(ws_source, "start_manual_listen_now")
     stop_body = function_body(ws_source, "xiaozhi_ws_stop_listen")
+    auto_silence_handler = function_body(ws_source, "handle_auto_silence_timeout_event")
     sr_uplink_body = function_body(ws_source, "start_sr_uplink_stream")
     downlink_body = function_body(ws_source, "ensure_downlink_audio_stream")
     restart_sr_body = function_body(ws_source, "restart_sr_after_downlink")
@@ -115,8 +116,8 @@ def main() -> int:
             "VAD speech must send listen start with mode=auto", failures)
     require("AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED" in vad_body or "AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED" in sr_uplink_body,
             "VAD speech must use SR external PCM feed, not direct codec capture", failures)
-    require("xiaozhi_ws_stop_listen()" in vad_body,
-            "VAD silence must reuse listen stop response handling", failures)
+    require("schedule_auto_silence_stop" in vad_body and "xiaozhi_ws_stop_listen()" in auto_silence_handler,
+            "VAD silence must defer endpointing and reuse listen stop response handling", failures)
     require("audio_opus_stream_feed_pcm" in feed_body,
             "SR processed PCM must feed Opus uplink while LISTENING", failures)
 
