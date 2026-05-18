@@ -58,6 +58,7 @@ def main():
     stage1 = read("main/app/xiaozhi_stage1.c")
     kconfig = read("main/Kconfig.projbuild")
     sdkconfig_defaults = read("sdkconfig.defaults")
+    sdkconfig = read("sdkconfig")
 
     finish_body = function_body(provisioning, "finish_provisioning_stop")
     request_body = function_body(provisioning, "request_provisioning_stop_now")
@@ -139,6 +140,16 @@ def main():
             "stage1 must log SR auto-init disabled after READY")
     require("CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE" in sdkconfig_defaults,
             "sdkconfig.defaults must explicitly keep SR auto-init disabled")
+    require("CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y" in sdkconfig_defaults,
+            "sdkconfig.defaults must keep NimBLE dynamic allocations in external PSRAM")
+    require("CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y" in sdkconfig,
+            "sdkconfig must enable NimBLE external PSRAM allocation for provisioning heap headroom")
+    require("# CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL is not set" in sdkconfig,
+            "sdkconfig must disable NimBLE internal-only allocation")
+    require("CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y" in sdkconfig_defaults,
+            "sdkconfig.defaults must prefer PSRAM for WiFi/LwIP allocations")
+    require("CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y" in sdkconfig,
+            "sdkconfig must prefer PSRAM for WiFi/LwIP allocations")
 
 
 if __name__ == "__main__":
