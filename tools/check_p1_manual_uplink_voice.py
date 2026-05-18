@@ -164,12 +164,54 @@ def check_waiting_response_recovery(failures: list[str]) -> None:
             "WAITING_RESPONSE timeout must recover to READY", failures)
     require("note_waiting_response_activity" in ws_source,
             "server response activity must refresh or cancel WAITING_RESPONSE timeout", failures)
+    activity_body = function_body(ws_source, "note_waiting_response_activity")
+    require("s_waiting_response_timeout_ms = XIAOZHI_WS_RESPONSE_TIMEOUT_MS" in activity_body,
+            "WAITING_RESPONSE activity refresh must update the logged timeout value", failures)
     require("audio_opus_stream_stats_t" in stream_header and "audio_opus_stream_get_stats" in stream_header,
             "audio_opus_stream must expose tx stats for state-machine recovery diagnostics", failures)
     require("audio_opus_stream_get_stats" in stream_source and "tx_bytes" in stream_source,
             "audio_opus_stream.c must implement tx stats access", failures)
     require("xiaozhi_ws_request_ready" in ws_header and "wait_for_ready(" not in detect_body,
             "P0 detect text request must not block app_controller waiting for WebSocket READY", failures)
+
+
+def check_p2_resilience_guardrails(failures: list[str]) -> None:
+    ws_source = read("main/xiaozhi/xiaozhi_ws.c")
+    stream_source = read("main/services/audio/audio_opus_stream.c")
+    tts_body = function_body(ws_source, "handle_tts")
+    binary_body = function_body(ws_source, "handle_binary_opus")
+    speaking_timeout_body = function_body(ws_source, "speaking_timeout_cb")
+    stop_body = function_body(ws_source, "xiaozhi_ws_stop_listen")
+    watermarks_body = function_body(stream_source, "audio_opus_stream_log_watermarks")
+    flush_body = function_body(stream_source, "audio_opus_stream_flush")
+
+    require("XIAOZHI_WS_SPEAKING_IDLE_TIMEOUT_MS" in ws_source,
+            "P2 speaking playback must define an idle watchdog timeout", failures)
+    require("s_speaking_timeout_timer" in ws_source and "speaking_timeout_cb" in ws_source,
+            "P2 speaking playback must use a FreeRTOS one-shot watchdog timer", failures)
+    require("note_speaking_activity" in tts_body and "note_speaking_activity" in binary_body,
+            "P2 TTS start and binary downlink must refresh the speaking watchdog", failures)
+    require("cancel_speaking_timeout_timer" in tts_body and 'strcmp(msg->state, "stop") == 0' in tts_body,
+            "P2 TTS stop must cancel the speaking watchdog", failures)
+    require("set_state(XIAOZHI_WS_STATE_READY)" in speaking_timeout_body and "s_waiting_tts_stop = false" in speaking_timeout_body,
+            "P2 speaking watchdog timeout must recover to READY and clear TTS wait state", failures)
+    require("cancel_speaking_timeout_timer" in ws_source and "reset_session_flags" in ws_source,
+            "P2 session reset must cancel the speaking watchdog", failures)
+
+    require("s_manual_listen_start_tick = 0" in stop_body,
+            "P2 listen stop must clear manual listen start tick after computing the turn duration", failures)
+    require("s_stream.downlink_pending_frames = 0" in flush_body,
+            "P2 audio stream flush must reset stale downlink pending frame counters", failures)
+
+    for field in (
+        "pcm_rb_free",
+        "pcm_rb_max_item",
+        "downlink_rb_free",
+        "downlink_rb_max_item",
+        "minimum_free_heap",
+    ):
+        require(field in watermarks_body,
+                f"P2 audio stream watermarks must include {field}", failures)
 
 
 def check_pcm_diagnostics_and_sample_contract(failures: list[str]) -> None:
@@ -248,6 +290,7 @@ def main() -> int:
     check_sw3_long_press_events(failures)
     check_manual_listen_state_machine(failures)
     check_waiting_response_recovery(failures)
+    check_p2_resilience_guardrails(failures)
     check_pcm_diagnostics_and_sample_contract(failures)
     check_p1_quality_fixes(failures)
     check_sr_auto_init_disabled(failures)
