@@ -147,6 +147,7 @@ def check_waiting_response_recovery(failures: list[str]) -> None:
     stop_body = function_body(ws_source, "xiaozhi_ws_stop_listen")
     detect_body = function_body(ws_source, "xiaozhi_ws_trigger_detect_text")
     timeout_body = function_body(ws_source, "waiting_response_timeout_cb")
+    timeout_handler_body = function_body(ws_source, "handle_waiting_response_timeout_event")
 
     require("XIAOZHI_WS_RESPONSE_TIMEOUT_MS" in ws_source and "XIAOZHI_WS_SHORT_RESPONSE_TIMEOUT_MS" in ws_source,
             "WAITING_RESPONSE must have normal and short recovery timeouts", failures)
@@ -158,10 +159,12 @@ def check_waiting_response_recovery(failures: list[str]) -> None:
             "listen stop must inspect uplink tx stats before choosing the response timeout", failures)
     require("XIAOZHI_WS_MIN_LISTEN_TX_FRAMES" in stop_body and "XIAOZHI_WS_MIN_LISTEN_MS" in stop_body,
             "listen stop must apply the minimum recording protection", failures)
-    require("tx_frames" in timeout_body and "tx_bytes" in timeout_body and "last_state" in timeout_body,
-            "WAITING_RESPONSE timeout log must include tx_frames, tx_bytes, and last_state", failures)
-    require("set_state(XIAOZHI_WS_STATE_READY)" in timeout_body,
-            "WAITING_RESPONSE timeout must recover to READY", failures)
+    require("xiaozhi_ws_post_session_event" in timeout_body and "XIAOZHI_WS_EVT_WAIT_RESPONSE_TIMEOUT" in timeout_body,
+            "WAITING_RESPONSE timer callback must only post a session timeout event", failures)
+    require("tx_frames" in timeout_handler_body and "tx_bytes" in timeout_handler_body and "last_state" in timeout_handler_body,
+            "WAITING_RESPONSE timeout handler log must include tx_frames, tx_bytes, and last_state", failures)
+    require("set_state(XIAOZHI_WS_STATE_READY)" in timeout_handler_body,
+            "WAITING_RESPONSE timeout handler must recover to READY", failures)
     require("note_waiting_response_activity" in ws_source,
             "server response activity must refresh or cancel WAITING_RESPONSE timeout", failures)
     activity_body = function_body(ws_source, "note_waiting_response_activity")
@@ -181,6 +184,7 @@ def check_p2_resilience_guardrails(failures: list[str]) -> None:
     tts_body = function_body(ws_source, "handle_tts")
     binary_body = function_body(ws_source, "handle_binary_opus")
     speaking_timeout_body = function_body(ws_source, "speaking_timeout_cb")
+    speaking_timeout_handler_body = function_body(ws_source, "handle_speaking_timeout_event")
     stop_body = function_body(ws_source, "xiaozhi_ws_stop_listen")
     watermarks_body = function_body(stream_source, "audio_opus_stream_log_watermarks")
     flush_body = function_body(stream_source, "audio_opus_stream_flush")
@@ -194,8 +198,10 @@ def check_p2_resilience_guardrails(failures: list[str]) -> None:
             "P2 TTS start and binary downlink must refresh the speaking watchdog", failures)
     require("cancel_speaking_timeout_timer" in tts_body and 'strcmp(msg->state, "stop") == 0' in tts_body,
             "P2 TTS stop must cancel the speaking watchdog", failures)
-    require("set_state(XIAOZHI_WS_STATE_READY)" in speaking_timeout_body and "s_waiting_tts_stop = false" in speaking_timeout_body,
-            "P2 speaking watchdog timeout must recover to READY and clear TTS wait state", failures)
+    require("xiaozhi_ws_post_session_event" in speaking_timeout_body and "XIAOZHI_WS_EVT_SPEAKING_TIMEOUT" in speaking_timeout_body,
+            "P2 speaking watchdog timer callback must only post a session event", failures)
+    require("set_state(err == ESP_OK ? XIAOZHI_WS_STATE_READY" in speaking_timeout_handler_body and "s_waiting_tts_stop = false" in speaking_timeout_handler_body,
+            "P2 speaking watchdog timeout handler must recover to READY and clear TTS wait state", failures)
     require("cancel_speaking_timeout_timer" in ws_source and "reset_session_flags" in ws_source,
             "P2 session reset must cancel the speaking watchdog", failures)
 
