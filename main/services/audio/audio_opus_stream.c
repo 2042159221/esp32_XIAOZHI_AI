@@ -77,12 +77,15 @@ typedef struct {
     audio_opus_pcm_source_t pcm_source;
     audio_opus_stream_send_cb_t send_cb;
     void *user_ctx;
+    uint32_t flags;
     size_t pcm_frame_bytes;
     size_t opus_frame_bytes;
     size_t decoded_frame_bytes;
     int decoder_output_sample_rate;
     volatile bool running;
     volatile bool uplink_enabled;
+    bool skip_audio_path_open;
+    bool uplink_only;
     uint32_t tx_frames;
     uint32_t tx_bytes;
     uint32_t capture_frames;
@@ -495,6 +498,12 @@ esp_err_t audio_opus_stream_start(const audio_opus_stream_config_t *config)
                             "cannot change running stream pcm_source old=%d new=%d",
                             s_stream.pcm_source,
                             config->pcm_source);
+        ESP_RETURN_ON_FALSE(config->flags == s_stream.flags,
+                            ESP_ERR_INVALID_STATE,
+                            TAG,
+                            "cannot change running stream flags old=0x%08x new=0x%08x",
+                            (unsigned int)s_stream.flags,
+                            (unsigned int)config->flags);
         s_stream.send_cb = config->send_cb;
         s_stream.user_ctx = config->user_ctx;
         return ESP_OK;
@@ -504,6 +513,9 @@ esp_err_t audio_opus_stream_start(const audio_opus_stream_config_t *config)
     s_stream.send_cb = config->send_cb;
     s_stream.user_ctx = config->user_ctx;
     s_stream.pcm_source = config->pcm_source;
+    s_stream.flags = config->flags;
+    s_stream.skip_audio_path_open = (config->flags & AUDIO_OPUS_STREAM_FLAG_SKIP_AUDIO_PATH_OPEN) != 0;
+    s_stream.uplink_only = (config->flags & AUDIO_OPUS_STREAM_FLAG_UPLINK_ONLY) != 0;
     s_stream.decoder_output_sample_rate = config->decoder_output_sample_rate > 0 ? config->decoder_output_sample_rate : AUDIO_OPUS_SAMPLE_RATE;
     s_stream.pcm_frame_bytes = AUDIO_OPUS_PCM_FRAME_BYTES;
     s_stream.opus_frame_bytes = AUDIO_OPUS_ENCODED_FRAME_CAPACITY_BYTES;
@@ -518,22 +530,29 @@ esp_err_t audio_opus_stream_start(const audio_opus_stream_config_t *config)
         return ESP_ERR_NO_MEM;
     }
 
-    const int volume = config->output_volume >= 0 ? config->output_volume : CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_VOLUME;
-    esp_err_t err = open_audio_path(volume, s_stream.decoder_output_sample_rate);
-    if (err != ESP_OK) {
-        audio_opus_stream_stop();
-        return err;
+    esp_err_t err = ESP_OK;
+    if (!s_stream.skip_audio_path_open) {
+        const int volume = config->output_volume >= 0 ? config->output_volume : CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_VOLUME;
+        err = open_audio_path(volume, s_stream.decoder_output_sample_rate);
+        if (err != ESP_OK) {
+            audio_opus_stream_stop();
+            return err;
+        }
+    } else {
+        ESP_LOGI(TAG, "audio path open skipped for uplink-only external feed");
     }
 
     s_stream.pcm_rb = create_stream_ringbuffer(CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_PCM_RING_BYTES);
-    s_stream.downlink_rb = create_stream_ringbuffer(CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_OPUS_RING_BYTES);
-    if (s_stream.pcm_rb == NULL || s_stream.downlink_rb == NULL) {
+    if (!s_stream.uplink_only) {
+        s_stream.downlink_rb = create_stream_ringbuffer(CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_OPUS_RING_BYTES);
+    }
+    if (s_stream.pcm_rb == NULL || (!s_stream.uplink_only && s_stream.downlink_rb == NULL)) {
         audio_opus_stream_stop();
         return ESP_ERR_NO_MEM;
     }
 
     const size_t pcm_max_item = xRingbufferGetMaxItemSize(s_stream.pcm_rb);
-    const size_t opus_max_item = xRingbufferGetMaxItemSize(s_stream.downlink_rb);
+    const size_t opus_max_item = s_stream.downlink_rb != NULL ? xRingbufferGetMaxItemSize(s_stream.downlink_rb) : s_stream.opus_frame_bytes;
     if (s_stream.pcm_frame_bytes > pcm_max_item || s_stream.opus_frame_bytes > opus_max_item) {
         ESP_LOGE(TAG,
                  "stream ringbuffer too small pcm_frame=%u pcm_max_item=%u opus_frame=%u opus_max_item=%u",
@@ -546,11 +565,13 @@ esp_err_t audio_opus_stream_start(const audio_opus_stream_config_t *config)
     }
 
     s_stream.running = true;
-    err = create_stream_task(decoder_task,
-                             "opus_downlink",
-                             CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_DECODER_TASK_STACK_SIZE,
-                             AUDIO_OPUS_STREAM_DECODER_TASK_PRIORITY,
-                             &s_stream.decoder_task);
+    if (!s_stream.uplink_only) {
+        err = create_stream_task(decoder_task,
+                                 "opus_downlink",
+                                 CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_DECODER_TASK_STACK_SIZE,
+                                 AUDIO_OPUS_STREAM_DECODER_TASK_PRIORITY,
+                                 &s_stream.decoder_task);
+    }
     if (err == ESP_OK) {
         err = create_stream_task(encoder_task,
                                  "opus_uplink",
@@ -752,7 +773,7 @@ esp_err_t audio_opus_stream_feed_pcm(const uint8_t *pcm, size_t len)
 esp_err_t audio_opus_stream_enqueue_downlink_opus(const uint8_t *opus, size_t len)
 {
     ESP_RETURN_ON_FALSE(opus != NULL && len > 0, ESP_ERR_INVALID_ARG, TAG, "invalid downlink opus");
-    if (!s_stream.running || s_stream.downlink_rb == NULL) {
+    if (!s_stream.running || s_stream.uplink_only || s_stream.downlink_rb == NULL) {
         s_stream.downlink_drop_count++;
         return ESP_ERR_INVALID_STATE;
     }

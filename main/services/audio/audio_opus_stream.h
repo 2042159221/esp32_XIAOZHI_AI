@@ -24,7 +24,11 @@ typedef struct {
     int output_volume;
     audio_opus_pcm_source_t pcm_source;
     int decoder_output_sample_rate;
+    uint32_t flags;
 } audio_opus_stream_config_t;
+
+#define AUDIO_OPUS_STREAM_FLAG_SKIP_AUDIO_PATH_OPEN (1U << 0)
+#define AUDIO_OPUS_STREAM_FLAG_UPLINK_ONLY (1U << 1)
 
 typedef struct {
     uint32_t tx_frames;

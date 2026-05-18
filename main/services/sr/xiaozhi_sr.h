@@ -23,6 +23,8 @@ typedef struct {
 
 esp_err_t xiaozhi_sr_init(const xiaozhi_sr_callbacks_t *callbacks);
 esp_err_t xiaozhi_sr_stop(void);
+esp_err_t xiaozhi_sr_pause(void);
+esp_err_t xiaozhi_sr_resume(void);
 bool xiaozhi_sr_get_wake_flag(void);
 void xiaozhi_sr_clear_wake_flag(void);
 

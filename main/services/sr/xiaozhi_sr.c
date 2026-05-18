@@ -38,6 +38,7 @@ static size_t s_feed_buffer_bytes;
 static int s_feed_chunksize;
 static int s_feed_channel_num;
 static volatile bool s_running;
+static volatile bool s_paused;
 static volatile bool s_wake_flag;
 static xiaozhi_sr_callbacks_t s_callbacks;
 static vad_state_t s_last_vad_state = VAD_SILENCE;
@@ -115,6 +116,7 @@ static void reset_state(void)
     s_feed_chunksize = 0;
     s_feed_channel_num = 0;
     s_running = false;
+    s_paused = false;
     s_wake_flag = false;
     s_last_vad_state = VAD_SILENCE;
     s_wakenet_model_name = NULL;
@@ -249,6 +251,11 @@ static void sr_feed_task(void *arg)
     (void)arg;
 
     while (s_running) {
+        if (s_paused) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+
         int ret = esp_codec_dev_read(bsp_audio_get_codec(), s_feed_buffer, (int)s_feed_buffer_bytes);
         if (ret != ESP_CODEC_DEV_OK) {
             ESP_LOGW(TAG, "sr mic read failed: %d", ret);
@@ -271,6 +278,11 @@ static void sr_detect_task(void *arg)
     (void)arg;
 
     while (s_running) {
+        if (s_paused) {
+            vTaskDelay(pdMS_TO_TICKS(XIAOZHI_SR_FETCH_TIMEOUT_MS));
+            continue;
+        }
+
         afe_fetch_result_t *result = s_afe_handle->fetch_with_delay(s_afe_data, pdMS_TO_TICKS(XIAOZHI_SR_FETCH_TIMEOUT_MS));
         if (result == NULL) {
             continue;
@@ -387,6 +399,27 @@ esp_err_t xiaozhi_sr_stop(void)
     s_wake_flag = false;
     s_last_vad_state = VAD_SILENCE;
     memset(&s_callbacks, 0, sizeof(s_callbacks));
+    return ESP_OK;
+}
+
+esp_err_t xiaozhi_sr_pause(void)
+{
+    if (!s_running) {
+        return ESP_OK;
+    }
+    s_paused = true;
+    ESP_LOGI(TAG, "sr paused");
+    return ESP_OK;
+}
+
+esp_err_t xiaozhi_sr_resume(void)
+{
+    if (!s_running) {
+        return ESP_OK;
+    }
+    ESP_RETURN_ON_ERROR(bsp_audio_open(), TAG, "resume SR audio codec failed");
+    s_paused = false;
+    ESP_LOGI(TAG, "sr resumed");
     return ESP_OK;
 }
 
