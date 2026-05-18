@@ -36,6 +36,18 @@ def function_body(source: str, name: str) -> str:
     return ""
 
 
+def strip_preprocessor_else(body: str, config: str) -> str:
+    marker = f"#if {config}"
+    start = body.find(marker)
+    if start < 0:
+        return body
+    else_pos = body.find("#else", start)
+    endif_pos = body.find("#endif", start)
+    if else_pos < 0 or endif_pos < 0 or else_pos > endif_pos:
+        return body
+    return body[:else_pos] + body[endif_pos + len("#endif"):]
+
+
 def main() -> int:
     failures: list[str] = []
     defaults = read("sdkconfig.defaults")
@@ -55,7 +67,11 @@ def main() -> int:
     feed_body = function_body(ws_source, "xiaozhi_ws_feed_processed_pcm")
     manual_start = function_body(ws_source, "start_manual_listen_now")
     stop_body = function_body(ws_source, "xiaozhi_ws_stop_listen")
+    sr_uplink_body = function_body(ws_source, "start_sr_uplink_stream")
+    downlink_body = function_body(ws_source, "ensure_downlink_audio_stream")
+    restart_sr_body = function_body(ws_source, "restart_sr_after_downlink")
     stream_start = function_body(stream_source, "audio_opus_stream_start")
+    auto_handle_hello = strip_preprocessor_else(handle_hello, "CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE")
 
     require("CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE=y" in defaults,
             "P3 defaults must enable automatic SR", failures)
@@ -88,7 +104,7 @@ def main() -> int:
 
     require("CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE" in handle_hello,
             "server hello handling must branch for automatic SR mode", failures)
-    require("start_audio_stream(AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED)" not in handle_hello,
+    require("start_audio_stream(AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED)" not in auto_handle_hello,
             "P3 server hello must not unconditionally start downlink stream and steal SR codec", failures)
     require("set_state(XIAOZHI_WS_STATE_READY)" in handle_hello,
             "server hello must still enter READY", failures)
@@ -97,20 +113,20 @@ def main() -> int:
             "VAD speech must start SR external PCM uplink stream", failures)
     require('send_listen_state("start", "auto")' in vad_body,
             "VAD speech must send listen start with mode=auto", failures)
-    require("AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED" in vad_body,
+    require("AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED" in vad_body or "AUDIO_OPUS_PCM_SOURCE_EXTERNAL_FEED" in sr_uplink_body,
             "VAD speech must use SR external PCM feed, not direct codec capture", failures)
     require("xiaozhi_ws_stop_listen()" in vad_body,
             "VAD silence must reuse listen stop response handling", failures)
     require("audio_opus_stream_feed_pcm" in feed_body,
             "SR processed PCM must feed Opus uplink while LISTENING", failures)
 
-    require("xiaozhi_sr_pause" in handle_binary or "xiaozhi_sr_stop" in handle_binary,
+    require("xiaozhi_sr_pause" in handle_binary or "xiaozhi_sr_pause" in downlink_body or "xiaozhi_sr_stop" in handle_binary,
             "binary TTS playback must release SR codec ownership before downlink playback", failures)
     require("ensure_downlink_audio_stream" in handle_binary,
             "binary TTS playback must lazily start downlink audio stream", failures)
     require("ensure_downlink_audio_stream" in handle_tts,
             "TTS start must prepare downlink stream only when playback is actually needed", failures)
-    require("xiaozhi_sr_resume" in handle_tts,
+    require("xiaozhi_sr_resume" in handle_tts or "xiaozhi_sr_resume" in restart_sr_body,
             "TTS stop must resume SR after playback completes", failures)
 
     require("CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE" in manual_start,

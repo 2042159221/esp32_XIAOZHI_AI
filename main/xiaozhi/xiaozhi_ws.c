@@ -459,7 +459,15 @@ static int resolve_decoder_output_sample_rate(void)
 
 static esp_err_t start_audio_stream(audio_opus_pcm_source_t pcm_source)
 {
-    return start_audio_stream_with_flags(pcm_source, resolve_decoder_output_sample_rate(), 0);
+    const audio_opus_stream_config_t config = {
+        .send_cb = send_opus_frame,
+        .user_ctx = NULL,
+        .output_volume = -1,
+        .pcm_source = pcm_source,
+        .decoder_output_sample_rate = resolve_decoder_output_sample_rate(),
+        .flags = 0,
+    };
+    return audio_opus_stream_start(&config);
 }
 
 static esp_err_t start_audio_stream_with_flags(audio_opus_pcm_source_t pcm_source, int decoder_output_sample_rate, uint32_t flags)
@@ -504,7 +512,8 @@ static esp_err_t ensure_downlink_audio_stream(void)
         return ESP_OK;
     }
 
-    ESP_RETURN_ON_ERROR(xiaozhi_sr_pause(), TAG, "pause SR before downlink failed");
+    esp_err_t pause_err = xiaozhi_sr_pause();
+    ESP_RETURN_ON_ERROR(pause_err, TAG, "pause SR before downlink failed");
     (void)audio_opus_stream_set_uplink_enabled(false);
     audio_opus_stream_flush();
     stop_opus_audio_stream();
@@ -536,7 +545,8 @@ static esp_err_t restart_sr_after_downlink(void)
     (void)audio_opus_stream_close_decoder();
     stop_opus_audio_stream();
     s_auto_sr_downlink_active = false;
-    ESP_RETURN_ON_ERROR(xiaozhi_sr_resume(), TAG, "resume SR after downlink failed");
+    esp_err_t resume_err = xiaozhi_sr_resume();
+    ESP_RETURN_ON_ERROR(resume_err, TAG, "resume SR after downlink failed");
     return ESP_OK;
 #else
     (void)audio_opus_stream_close_decoder();
@@ -765,6 +775,9 @@ static void handle_binary_opus(const uint8_t *data, size_t len)
         (void)audio_opus_stream_set_uplink_enabled(false);
         set_state(XIAOZHI_WS_STATE_SPEAKING);
     }
+#if CONFIG_XIAOZHI_STAGE1_AUTO_SR_ENABLE
+    (void)xiaozhi_sr_pause();
+#endif
     esp_err_t prepare_err = ensure_downlink_audio_stream();
     if (prepare_err != ESP_OK) {
         ESP_LOGW(TAG, "prepare downlink for binary opus failed: %s", esp_err_to_name(prepare_err));
