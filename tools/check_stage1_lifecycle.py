@@ -61,6 +61,7 @@ def main():
 
     finish_body = function_body(provisioning, "finish_provisioning_stop")
     request_body = function_body(provisioning, "request_provisioning_stop_now")
+    finalize_task_body = function_body(provisioning, "provisioning_finalize_task")
     maybe_start_body = function_body(provisioning, "maybe_start_business_after_provisioning")
     start_business_body = function_body(provisioning, "start_business")
     wifi_prov_end = case_body(provisioning, "case WIFI_PROV_END:")
@@ -83,6 +84,12 @@ def main():
             "business startup must log immediately before xiaozhi stage1")
     require("schedule_provisioning_finalize();" in request_body,
             "app-requested provisioning stop must schedule finalize fallback")
+    require("xTaskCreatePinnedToCoreWithCaps(provisioning_finalize_task" in provisioning,
+            "provisioning finalize task must use PSRAM-capable task creation")
+    require("MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT" in provisioning,
+            "provisioning finalize task stack must be allocated from PSRAM-capable memory")
+    require("vTaskDeleteWithCaps(NULL);" in finalize_task_body,
+            "provisioning finalize task must delete itself with caps-aware API")
     require("WIFI_PROV_CRED_SUCCESS" in wifi_cred_success,
             "WIFI_PROV_CRED_SUCCESS must be logged before stopping provisioning")
     require("s_restart_provisioning_after_stop" not in wifi_cred_fail,
