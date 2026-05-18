@@ -288,8 +288,6 @@ static void speaking_timeout_cb(TimerHandle_t timer)
              (unsigned int)XIAOZHI_WS_SPEAKING_IDLE_TIMEOUT_MS);
     s_waiting_tts_stop = false;
     set_state(XIAOZHI_WS_STATE_READY);
-    log_heap_stats("SPEAKING timeout");
-    audio_opus_stream_log_watermarks("SPEAKING timeout");
 }
 
 static void log_token_summary(const char *token)

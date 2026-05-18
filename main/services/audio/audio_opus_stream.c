@@ -18,6 +18,7 @@
 #include "freertos/task.h"
 
 static const char *TAG = "audio_opus_stream";
+static portMUX_TYPE s_pending_lock = portMUX_INITIALIZER_UNLOCKED;
 
 #ifndef CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_VOLUME
 #define CONFIG_XIAOZHI_AUDIO_OPUS_STREAM_VOLUME 65
@@ -104,6 +105,11 @@ static void direct_capture_task(void *arg);
 static void encoder_task(void *arg);
 static void decoder_task(void *arg);
 static void log_direct_capture_pcm_stats(const uint8_t *pcm_frame, size_t len);
+static uint32_t pending_downlink_get(void);
+static void pending_downlink_increment(void);
+static void pending_downlink_decrement(void);
+static void pending_downlink_subtract(uint32_t count);
+static uint32_t pending_downlink_reset_when_stopped(void);
 
 static size_t pcm_frame_bytes_for_sample_rate(int sample_rate)
 {
@@ -165,12 +171,13 @@ static void unlock_codec(void)
     }
 }
 
-static void drain_ringbuffer(RingbufHandle_t rb)
+static size_t drain_ringbuffer(RingbufHandle_t rb)
 {
     if (rb == NULL) {
-        return;
+        return 0;
     }
 
+    size_t drained = 0;
     while (true) {
         size_t item_size = 0;
         void *item = xRingbufferReceive(rb, &item_size, 0);
@@ -178,7 +185,57 @@ static void drain_ringbuffer(RingbufHandle_t rb)
             break;
         }
         vRingbufferReturnItem(rb, item);
+        drained++;
     }
+    return drained;
+}
+
+static uint32_t pending_downlink_get(void)
+{
+    taskENTER_CRITICAL(&s_pending_lock);
+    uint32_t value = s_stream.downlink_pending_frames;
+    taskEXIT_CRITICAL(&s_pending_lock);
+    return value;
+}
+
+static void pending_downlink_increment(void)
+{
+    taskENTER_CRITICAL(&s_pending_lock);
+    s_stream.downlink_pending_frames++;
+    taskEXIT_CRITICAL(&s_pending_lock);
+}
+
+static void pending_downlink_decrement(void)
+{
+    taskENTER_CRITICAL(&s_pending_lock);
+    if (s_stream.downlink_pending_frames > 0) {
+        s_stream.downlink_pending_frames--;
+    }
+    taskEXIT_CRITICAL(&s_pending_lock);
+}
+
+static void pending_downlink_subtract(uint32_t count)
+{
+    taskENTER_CRITICAL(&s_pending_lock);
+    if (count >= s_stream.downlink_pending_frames) {
+        s_stream.downlink_pending_frames = 0;
+    } else {
+        s_stream.downlink_pending_frames -= count;
+    }
+    taskEXIT_CRITICAL(&s_pending_lock);
+}
+
+static uint32_t pending_downlink_reset_when_stopped(void)
+{
+    if (s_stream.running) {
+        return pending_downlink_get();
+    }
+
+    taskENTER_CRITICAL(&s_pending_lock);
+    uint32_t old_value = s_stream.downlink_pending_frames;
+    s_stream.downlink_pending_frames = 0;
+    taskEXIT_CRITICAL(&s_pending_lock);
+    return old_value;
 }
 
 static bool should_log_frame(uint32_t frame_index)
@@ -387,7 +444,7 @@ void audio_opus_stream_log_watermarks(const char *label)
              name,
              s_stream.running,
              s_stream.uplink_enabled,
-             (unsigned int)s_stream.downlink_pending_frames,
+             (unsigned int)pending_downlink_get(),
              (unsigned int)s_stream.tx_frames,
              (unsigned int)s_stream.capture_frames,
              (unsigned int)s_stream.rx_frames,
@@ -571,6 +628,12 @@ esp_err_t audio_opus_stream_stop(void)
         vRingbufferDelete(s_stream.downlink_rb);
         s_stream.downlink_rb = NULL;
     }
+    uint32_t downlink_pending_before_reset = pending_downlink_reset_when_stopped();
+    if (downlink_pending_before_reset > 0) {
+        ESP_LOGI(TAG,
+                 "audio stream stop reset pending_downlink old=%u",
+                 (unsigned int)downlink_pending_before_reset);
+    }
     if (s_stream.codec_lock != NULL) {
         vSemaphoreDelete(s_stream.codec_lock);
         s_stream.codec_lock = NULL;
@@ -652,9 +715,9 @@ esp_err_t audio_opus_stream_wait_downlink_idle(uint32_t timeout_ms)
 {
     const TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
 
-    while (s_stream.running && s_stream.downlink_pending_frames > 0) {
+    while (s_stream.running && pending_downlink_get() > 0) {
         if (xTaskGetTickCount() >= deadline) {
-            ESP_LOGW(TAG, "downlink drain timeout pending_frames=%u", (unsigned int)s_stream.downlink_pending_frames);
+            ESP_LOGW(TAG, "downlink drain timeout pending_frames=%u", (unsigned int)pending_downlink_get());
             return ESP_ERR_TIMEOUT;
         }
         vTaskDelay(pdMS_TO_TICKS(AUDIO_OPUS_STREAM_RECV_TIMEOUT_MS));
@@ -707,7 +770,7 @@ esp_err_t audio_opus_stream_enqueue_downlink_opus(const uint8_t *opus, size_t le
     }
 
     s_stream.rx_frames++;
-    s_stream.downlink_pending_frames++;
+    pending_downlink_increment();
     if (should_log_frame(s_stream.rx_frames)) {
         ESP_LOGI(TAG,
                  "downlink opus queued frames=%u len=%u free heap=%u minimum free heap=%u",
@@ -721,15 +784,19 @@ esp_err_t audio_opus_stream_enqueue_downlink_opus(const uint8_t *opus, size_t le
 
 void audio_opus_stream_flush(void)
 {
-    uint32_t downlink_pending_before = s_stream.downlink_pending_frames;
+    uint32_t downlink_pending_before = pending_downlink_get();
     drain_ringbuffer(s_stream.pcm_rb);
-    drain_ringbuffer(s_stream.downlink_rb);
-    if (downlink_pending_before > 0) {
-        ESP_LOGI(TAG,
-                 "audio stream flush reset pending_downlink old=%u",
-                 (unsigned int)downlink_pending_before);
+    size_t downlink_drained = drain_ringbuffer(s_stream.downlink_rb);
+    if (downlink_drained > 0) {
+        pending_downlink_subtract((uint32_t)downlink_drained);
     }
-    s_stream.downlink_pending_frames = 0;
+    if (downlink_pending_before > 0 || downlink_drained > 0) {
+        ESP_LOGI(TAG,
+                 "audio stream flush pending_downlink before=%u drained=%u after=%u",
+                 (unsigned int)downlink_pending_before,
+                 (unsigned int)downlink_drained,
+                 (unsigned int)pending_downlink_get());
+    }
 }
 
 static void direct_capture_task(void *arg)
@@ -931,9 +998,7 @@ static void decoder_task(void *arg)
         }
 
         int write_ret = esp_codec_dev_write(bsp_audio_get_codec(), decoded_frame, (int)decoded_len);
-        if (s_stream.downlink_pending_frames > 0) {
-            s_stream.downlink_pending_frames--;
-        }
+        pending_downlink_decrement();
         if (write_ret != ESP_CODEC_DEV_OK) {
             s_stream.playback_failures++;
             ESP_LOGW(TAG, "speaker playback failed: %d", write_ret);

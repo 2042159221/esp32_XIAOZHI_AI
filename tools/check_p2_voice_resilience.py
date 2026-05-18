@@ -67,9 +67,7 @@ class VoiceTurn:
         start_ok = self.listen_start and self.ready_to_listening
         uplink_ok = self.pcm_stats and self.opus_sent
         stop_ok = self.stop_event and self.listen_stop_payload and self.listening_to_waiting
-        response_ok = (
-            self.waiting_to_speaking and (self.speaking_to_ready or self.speaking_idle_timeout)
-        ) or (self.waiting_timeout and self.waiting_timeout_ready)
+        response_ok = (self.waiting_to_speaking and self.speaking_to_ready) or (self.waiting_timeout and self.waiting_timeout_ready)
         return start_ok and uplink_ok and stop_ok and response_ok
 
 
