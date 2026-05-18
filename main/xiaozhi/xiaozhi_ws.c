@@ -370,6 +370,120 @@ static void cancel_speaking_timeout_timer(void)
     }
 }
 
+static bool ensure_auto_endpoint_timers(void)
+{
+    if (s_auto_silence_timer == NULL) {
+        s_auto_silence_timer = xTimerCreate("xz_auto_sil",
+                                            pdMS_TO_TICKS(XIAOZHI_WS_AUTO_SILENCE_STOP_MS),
+                                            pdFALSE,
+                                            NULL,
+                                            auto_silence_timeout_cb);
+        if (s_auto_silence_timer == NULL) {
+            ESP_LOGE(TAG, "create auto silence timer failed");
+            return false;
+        }
+    }
+
+    if (s_auto_max_listen_timer == NULL) {
+        s_auto_max_listen_timer = xTimerCreate("xz_auto_max",
+                                               pdMS_TO_TICKS(XIAOZHI_WS_AUTO_MAX_LISTEN_MS),
+                                               pdFALSE,
+                                               NULL,
+                                               auto_max_listen_timeout_cb);
+        if (s_auto_max_listen_timer == NULL) {
+            ESP_LOGE(TAG, "create auto max listen timer failed");
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static void cancel_auto_endpoint_timers(void)
+{
+    if (s_auto_silence_timer != NULL) {
+        (void)xTimerStop(s_auto_silence_timer, 0);
+    }
+    if (s_auto_max_listen_timer != NULL) {
+        (void)xTimerStop(s_auto_max_listen_timer, 0);
+    }
+}
+
+static void auto_silence_timeout_cb(TimerHandle_t timer)
+{
+    (void)timer;
+    ESP_LOGI(TAG, "AUTO_SILENCE timer callback post event task=%s", pcTaskGetName(NULL));
+    (void)xiaozhi_ws_post_session_event(XIAOZHI_WS_EVT_AUTO_SILENCE_TIMEOUT);
+}
+
+static void auto_max_listen_timeout_cb(TimerHandle_t timer)
+{
+    (void)timer;
+    ESP_LOGI(TAG, "AUTO_MAX_LISTEN timer callback post event task=%s", pcTaskGetName(NULL));
+    (void)xiaozhi_ws_post_session_event(XIAOZHI_WS_EVT_AUTO_MAX_LISTEN_TIMEOUT);
+}
+
+static void schedule_auto_silence_stop(void)
+{
+    if (!ensure_auto_endpoint_timers()) {
+        return;
+    }
+
+    uint32_t listen_ms = current_listen_ms();
+    uint32_t silence_ms = current_silence_ms();
+    uint32_t wait_ms = XIAOZHI_WS_AUTO_SILENCE_STOP_MS;
+    if (silence_ms < XIAOZHI_WS_AUTO_SILENCE_STOP_MS) {
+        wait_ms = XIAOZHI_WS_AUTO_SILENCE_STOP_MS - silence_ms;
+    }
+    if (listen_ms < XIAOZHI_WS_MIN_LISTEN_MS) {
+        uint32_t min_wait_ms = XIAOZHI_WS_MIN_LISTEN_MS - listen_ms;
+        if (min_wait_ms > wait_ms) {
+            wait_ms = min_wait_ms;
+        }
+    }
+    if (wait_ms == 0) {
+        wait_ms = 1;
+    }
+
+    (void)xTimerChangePeriod(s_auto_silence_timer, pdMS_TO_TICKS(wait_ms), 0);
+    ESP_LOGI(TAG,
+             "auto silence stop scheduled wait_ms=%u listen_ms=%u silence_ms=%u task=%s",
+             (unsigned int)wait_ms,
+             (unsigned int)listen_ms,
+             (unsigned int)silence_ms,
+             pcTaskGetName(NULL));
+}
+
+static bool ensure_tts_resume_timer(void)
+{
+    if (s_tts_resume_timer == NULL) {
+        s_tts_resume_timer = xTimerCreate("xz_tts_res",
+                                          pdMS_TO_TICKS(XIAOZHI_WS_TTS_RESUME_DELAY_MS),
+                                          pdFALSE,
+                                          NULL,
+                                          tts_resume_timeout_cb);
+        if (s_tts_resume_timer == NULL) {
+            ESP_LOGE(TAG, "create TTS resume timer failed");
+            return false;
+        }
+    }
+    return true;
+}
+
+static void cancel_tts_resume_timer(void)
+{
+    if (s_tts_resume_timer != NULL) {
+        (void)xTimerStop(s_tts_resume_timer, 0);
+    }
+}
+
+static void tts_resume_timeout_cb(TimerHandle_t timer)
+{
+    (void)timer;
+    ESP_LOGI(TAG, "TTS_RESUME timer callback post event task=%s", pcTaskGetName(NULL));
+    (void)xiaozhi_ws_post_session_event(XIAOZHI_WS_EVT_TTS_RESUME_DELAY);
+}
+
 static void note_speaking_activity(const char *label)
 {
     if (s_ws_state != XIAOZHI_WS_STATE_SPEAKING) {
