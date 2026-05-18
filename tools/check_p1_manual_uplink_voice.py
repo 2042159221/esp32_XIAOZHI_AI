@@ -214,6 +214,28 @@ def check_p2_resilience_guardrails(failures: list[str]) -> None:
                 f"P2 audio stream watermarks must include {field}", failures)
 
 
+def check_p2_log_resilience_tool(failures: list[str]) -> None:
+    tool_path = ROOT / "tools/check_p2_voice_resilience.py"
+    require(tool_path.exists(),
+            "P2 must provide a runtime log validator at tools/check_p2_voice_resilience.py", failures)
+    if not tool_path.exists():
+        return
+
+    tool_source = tool_path.read_text(encoding="utf-8")
+    for symbol in (
+        "--min-turns",
+        "--require-waiting-timeout",
+        "--require-disconnect-recovery",
+        "parse_turns",
+        "WAITING_RESPONSE timeout after",
+        "SPEAKING idle timeout",
+        "cleanup stale websocket client before reconnect",
+        "state transition SPEAKING -> READY",
+    ):
+        require(symbol in tool_source,
+                f"P2 runtime log validator must check {symbol}", failures)
+
+
 def check_pcm_diagnostics_and_sample_contract(failures: list[str]) -> None:
     codec_header = read("main/services/audio/audio_opus_codec.h")
     codec_source = read("main/services/audio/audio_opus_codec.c")
@@ -291,6 +313,7 @@ def main() -> int:
     check_manual_listen_state_machine(failures)
     check_waiting_response_recovery(failures)
     check_p2_resilience_guardrails(failures)
+    check_p2_log_resilience_tool(failures)
     check_pcm_diagnostics_and_sample_contract(failures)
     check_p1_quality_fixes(failures)
     check_sr_auto_init_disabled(failures)
