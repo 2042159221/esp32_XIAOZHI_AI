@@ -973,6 +973,7 @@ static void decoder_task(void *arg)
 
         if (!lock_codec(pdMS_TO_TICKS(1000))) {
             vRingbufferReturnItem(s_stream.downlink_rb, item);
+            pending_downlink_decrement();
             s_stream.downlink_drop_count++;
             ESP_LOGW(TAG, "downlink opus decode skipped because codec lock timed out");
             continue;
@@ -992,6 +993,7 @@ static void decoder_task(void *arg)
         vRingbufferReturnItem(s_stream.downlink_rb, item);
 
         if (err != ESP_OK) {
+            pending_downlink_decrement();
             s_stream.downlink_drop_count++;
             ESP_LOGW(TAG, "downlink opus decode failed: %s", esp_err_to_name(err));
             continue;
