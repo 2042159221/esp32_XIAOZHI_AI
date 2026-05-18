@@ -65,6 +65,7 @@ def main():
     start_business_body = function_body(provisioning, "start_business")
     wifi_prov_end = case_body(provisioning, "case WIFI_PROV_END:")
     wifi_cred_success = case_body(provisioning, "case WIFI_PROV_CRED_SUCCESS:")
+    wifi_cred_fail = case_body(provisioning, "case WIFI_PROV_CRED_FAIL:")
 
     require("esp_prov_adapter_deinit();" in finish_body,
             "provisioning deinit must happen in finish_provisioning_stop")
@@ -84,6 +85,12 @@ def main():
             "app-requested provisioning stop must schedule finalize fallback")
     require("WIFI_PROV_CRED_SUCCESS" in wifi_cred_success,
             "WIFI_PROV_CRED_SUCCESS must be logged before stopping provisioning")
+    require("s_restart_provisioning_after_stop" not in wifi_cred_fail,
+            "credential failure must not restart BLE provisioning after BTDM release")
+    require("esp_prov_adapter_stop_provisioning();" not in wifi_cred_fail,
+            "credential failure must keep provisioning active for corrected credentials")
+    require("schedule_provisioning_finalize();" not in wifi_cred_fail,
+            "credential failure must not deinit BLE provisioning")
     require("schedule_provisioning_finalize();" in wifi_prov_end,
             "WIFI_PROV_END must schedule async finalize")
     require("WIFI_PROV_END" in wifi_prov_end,
